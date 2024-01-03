@@ -32,10 +32,11 @@ static OSStatus SecItemUpdate_replacement(CFDictionaryRef query, CFDictionaryRef
     return ((OSStatus (*)(CFDictionaryRef, CFDictionaryRef))SecItemUpdate_orig)((__bridge CFDictionaryRef)strippedQuery, attributesToUpdate);
 }
 
+static NSString *announcementUrl = @"https://apollogur.download/api/apollonouncement";
+
 static NSArray *blockedUrls = @[
     @"https://apollopushserver.xyz",
     @"telemetrydeck.com",
-    @"https://apollogur.download/api/apollonouncement",
     @"https://apollogur.download/api/easter_sale",
     @"https://apollogur.download/api/html_codes",
     @"https://apollogur.download/api/refund_screen_config",
@@ -331,6 +332,46 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
 
 %end
 
+
+// Randomise the trending subreddits list
+%hook NSBundle
+-(NSURL *)URLForResource:(NSString *)name withExtension:(NSString *)ext {
+    NSURL *url = %orig;
+    if ([name isEqualToString:@"trending-subreddits"] && [ext isEqualToString:@"plist"]) {
+        /*
+            - Parse plist
+            - Select random list of subreddits from the dict
+            - Add today's date to the dict, with the list as the value
+            - Return plist as a new file
+        */
+
+        NSMutableDictionary *dict = [[NSDictionary dictionaryWithContentsOfURL:url] mutableCopy];
+
+        // Select random array from dict
+        NSArray *keys = [dict allKeys];
+        NSString *randomKey = keys[arc4random_uniform((uint32_t)[keys count])];
+        NSArray *array = dict[randomKey];
+
+        // Get string of today's date
+        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+        // ex: 2023-9-28 (28th September 2023)
+        [formatter setDateFormat:@"yyyy-M-d"];
+
+        [dict setObject:array forKey:[formatter stringFromDate:[NSDate date]]];
+
+        // write new file
+        NSString *tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"trending-custom.plist"];
+        [[NSFileManager defaultManager] removeItemAtPath:tempPath error:nil]; // remove in case it exists
+        [dict writeToFile:tempPath atomically:YES];
+
+        return [NSURL fileURLWithPath:tempPath];
+    }
+    return url;
+}
+%end
+
+
+
 // Implementation derived from https://github.com/ichitaso/ApolloPatcher/blob/v0.0.5/Tweak.x
 // Credits to @ichitaso for the original implementation
 
@@ -495,6 +536,9 @@ static NSString *imageID;
             return;
         }
     }
+    if (sBlockAnnouncements && [requestURL containsString:announcementUrl]) {
+        return;
+    }
 
     // Intercept modified "unproxied" Imgur requests and replace Authorization header with custom client ID
     if ([requestURL containsString:@"https://api.imgur.com/"]) {
@@ -533,8 +577,12 @@ static NSString *imageID;
     ShareLinkRegex = [NSRegularExpression regularExpressionWithPattern:ShareLinkRegexPattern options:NSRegularExpressionCaseInsensitive error:&error];
     MediaShareLinkRegex = [NSRegularExpression regularExpressionWithPattern:MediaShareLinkPattern options:NSRegularExpressionCaseInsensitive error:&error];
 
+    NSDictionary *defaultValues = @{UDKeyBlockAnnouncements: @YES};
+    [[NSUserDefaults standardUserDefaults] registerDefaults:defaultValues];
+
     sRedditClientId = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedditClientId] ?: @"" copy];
     sImgurClientId = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyImgurClientId] ?: @"" copy];
+    sBlockAnnouncements = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyBlockAnnouncements];
 
     %init(SettingsGeneralViewController=objc_getClass("Apollo.SettingsGeneralViewController"));
 
