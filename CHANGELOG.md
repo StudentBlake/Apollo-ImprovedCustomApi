@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.1.1] - 2024-07-27
+
+- Working hybrid implementation of "New Comments Highlighter" Ultra feature
+- Add FLEX integration for debugging/tweaking purposes (requires app restart after enabling in Settings -> General -> Custom API)
+
+## [v1.0.12] - 2024-07-25
+
+Use generic user agent independent of bundle ID when sending requests to Reddit
+
+## [v1.0.11] - 2024-02-27
+
+Fix issue with Imgur uploads consistently failing. Note that multi-image uploads may still fail on the first attempt.
+
+## [v1.0.10] - 2024-01-22
+
+Add support for /u/ share links (e.g. `reddit.com/u/username/s/xxxxxx`).
+
 ## [v1.0.9] - 2023-12-29
 
 - Randomize "trending subreddits list" so it doesn't show **iOS**, **Clock**, **Time**, **IfYouDontMind** all the time - thanks [@iCrazeiOS](https://github.com/iCrazeiOS)!
@@ -46,6 +63,10 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v1.0.12]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.12...v1.1.1
+[v1.0.12]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.11...v1.0.12
+[v1.0.11]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.10...v1.0.11
+[v1.0.10]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.9...v1.0.10
 [v1.0.9]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.8...v1.0.9
 [v1.0.8]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.7...v1.0.8
 [v1.0.7]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.5...v1.0.7
