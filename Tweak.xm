@@ -49,7 +49,7 @@ static NSString *const defaultUserAgent = @"Mozilla/5.0 (Macintosh; Intel Mac OS
 static UIColor *const NewPostCommentsColor = [UIColorFromRGB(0xFFD16E) colorWithAlphaComponent: 0.15];
 
 // Regex for opaque share links
-static NSString *const ShareLinkRegexPattern = @"^(?:https?:)?//(?:www\\.)?reddit\\.com/(?:r|u)/(\\w+)/s/(\\w+)$";
+static NSString *const ShareLinkRegexPattern = @"^(?:https?:)?//(?:www\\.)?(?:np\\.)?reddit\\.com/(?:r|u)/(\\w+)/s/(\\w+)$";
 static NSRegularExpression *ShareLinkRegex;
 
 // Regex for media share links
