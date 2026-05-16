@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.12.0] - 2026-05-16
+## [v2.12.0b] - 2026-05-16
 
 ### Features
 
@@ -393,7 +393,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
-[v2.12.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.11.0...v2.12.0
+[v2.12.0b]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.11.0...v2.12.0b
 [v2.11.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.10.0...v2.11.0
 [v2.10.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.9.0...v2.10.0
 [v2.9.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.8.0...v2.9.0
