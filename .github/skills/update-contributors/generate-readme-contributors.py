@@ -92,20 +92,20 @@ def render_cell(contributor: dict, repo: str, width: str) -> str:
     else:
         badge_href = f"#{role}-{contributor_id(contributor)}"
 
-    content = ""
+    parts = []
     if avatar:
-        content += (
+        image = (
             f'<img src="{html.escape(avatar)}" width="100px;" height="100px;" '
-            f'style="object-fit: cover;" alt="{name}"/><br />'
+            f'style="object-fit: cover;" alt="{name}"/>'
         )
-    content += f"<sub><b>{name}</b></sub>"
-
-    if profile:
-        content = f'<a href="{html.escape(profile)}">{content}</a>'
+        if profile:
+            image = f'<a href="{html.escape(profile)}">{image}</a>'
+        parts.append(image)
+    parts.append(f"<sub><b>{name}</b></sub>")
 
     return (
         f'      <td align="center" valign="top" width="{width}">'
-        f'{content}<br /><a href="{html.escape(badge_href)}" '
+        f'{"<br />".join(parts)}<br /><a href="{html.escape(badge_href)}" '
         f'title="{html.escape(badge_title)}">{html.escape(badge_label)}</a></td>'
     )
 
