@@ -3,9 +3,10 @@
 
 iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you continue using Apollo with your own API keys after its shutdown in June 2023. The tweak also unlocks several Ultra features and includes several enhancements and fixes.
 
-| | | |
-|:--:|:--:|:--:|
-| <img src="img/settings.jpg" alt="Settings" width="250"> | <img src="img/custom.jpg" alt="Custom API Settings" width="250"> | <img src="img/recents.jpg" alt="Recently Read" width="250"> |
+| | | | |
+|:--:|:--:|:--:|:--:|
+| <img src="img/settings.jpg" alt="Settings" width="250"> | <img src="img/custom.jpg" alt="Custom API Settings" width="250"> | <img src="img/recents.jpg" alt="Recently Read" width="250"> | <img src="img/inline.jpg" alt="Inline Images" width="250"> |
+| <img src="img/lg-icons.jpg" alt="Liquid Glass Icons" width="250"> | <img src="img/avatar-profile.jpg" alt="User Profile Avatars" width="250"> | <img src="img/avatar-comments.jpg" alt="Comment Avatars" width="250"> | <img src="img/translation.jpg" alt="Translation" width="250"> |
 
 ## Features
 
