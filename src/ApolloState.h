@@ -22,6 +22,7 @@ extern NSInteger sUnmuteCommentsVideos;
 extern BOOL sProxyImgurDDG;
 extern BOOL sShowUserAvatars;
 extern BOOL sUseProfileAvatarTabIcon;
+extern BOOL sShowSubredditHeaders;
 extern BOOL sAutoHideTabBarShowOnIdle;
 extern BOOL sModernSubredditDividers;
 

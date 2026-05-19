@@ -606,8 +606,12 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionAPIKeys: return 7; // 5 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
         case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 12 : 11;
+<<<<<<< HEAD:src/CustomAPIViewController.m
         case SectionSubreddits: return 6;
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
+=======
+        case SectionSubreddits: return 7;
+>>>>>>> ed19291 (Add subreddit header metadata and search fix):CustomAPIViewController.m
         case SectionAbout: return 4; // GitHub + Thanks To + Export Logs + Version
         default: return 0;
     }
@@ -1094,30 +1098,35 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyModernSubredditDividers]
                                            action:@selector(modernSubredditDividersSwitchToggled:)];
         case 1:
+            return [self switchCellWithIdentifier:@"Cell_Sub_Headers"
+                                            label:@"Show Subreddit Headers"
+                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowSubredditHeaders]
+                                           action:@selector(subredditHeadersSwitchToggled:)];
+        case 2:
             return [self textFieldCellWithIdentifier:@"Cell_Sub_TrendLimit"
                                                label:@"Trending Subreddits Limit"
                                          placeholder:@"(unlimited)"
                                                 text:sTrendingSubredditsLimit
                                                  tag:TagTrendingLimit
                                            numerical:YES];
-        case 2:
+        case 3:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_Trending"
                                                       label:@"Trending Source"
                                                 placeholder:defaultTrendingSubredditsSource
                                                        text:sTrendingSubredditsSource
                                                         tag:TagTrendingSubredditsSource];
-        case 3:
+        case 4:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_Random"
                                                       label:@"Random Source"
                                                 placeholder:defaultRandomSubredditsSource
                                                        text:sRandomSubredditsSource
                                                         tag:TagRandomSubredditsSource];
-        case 4:
+        case 5:
             return [self switchCellWithIdentifier:@"Cell_Sub_RandNSFW"
                                             label:@"Show RandNSFW in Search"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowRandNsfw]
                                            action:@selector(randNsfwSwitchToggled:)];
-        case 5:
+        case 6:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_RandNSFW_Source"
                                                       label:@"RandNSFW Source"
                                                 placeholder:@"(empty)"
@@ -1730,6 +1739,12 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (void)proxyImgurDDGSwitchToggled:(UISwitch *)sender {
     sProxyImgurDDG = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sProxyImgurDDG forKey:UDKeyProxyImgurDDG];
+}
+
+- (void)subredditHeadersSwitchToggled:(UISwitch *)sender {
+    sShowSubredditHeaders = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sShowSubredditHeaders forKey:UDKeyShowSubredditHeaders];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloSubredditHeaderToggleChangedNotification" object:nil];
 }
 
 - (void)userAvatarsSwitchToggled:(UISwitch *)sender {
