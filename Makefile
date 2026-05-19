@@ -45,6 +45,7 @@ ApolloImprovedCustomApi_FILES = \
     $(SRC_DIR)/ApolloVideoSwipeFix.xm \
     $(SRC_DIR)/ApolloSubredditIndexPolish.xm \
     $(SRC_DIR)/ApolloTagFilters.xm \
+    $(SRC_DIR)/ApolloImageChestResolver.m \
     $(SRC_DIR)/ApolloLinkPreviewModel.m \
     $(SRC_DIR)/ApolloLinkPreviewCache.m \
     $(SRC_DIR)/ApolloLinkPreviewFetcher.m \

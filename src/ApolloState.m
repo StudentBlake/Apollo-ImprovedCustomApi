@@ -3,6 +3,7 @@
 NSString *sRedditClientId = nil;
 NSString *sRedditClientSecret = nil;
 NSString *sImgurClientId = nil;
+NSString *sImageChestAPIToken = nil;
 NSString *sRedirectURI = nil;
 NSString *sUserAgent = nil;
 NSString *sRandomSubredditsSource = nil;

@@ -134,7 +134,7 @@ static BOOL ApolloLPHostHasSuffix(NSURL *url, NSString *suffix) {
 static BOOL ApolloLPTrustedInlineImageHost(NSURL *url) {
     NSArray<NSString *> *suffixes = @[
         @"redd.it", @"imgur.com", @"giphy.com", @"tenor.com", @"redgifs.com",
-        @"twimg.com", @"discordapp.com", @"discordapp.net"
+        @"twimg.com", @"discordapp.com", @"discordapp.net", @"imgchest.com"
     ];
     for (NSString *suffix in suffixes) {
         if (ApolloLPHostHasSuffix(url, suffix)) return YES;
@@ -158,12 +158,26 @@ static BOOL ApolloLPIsImgurAlbumOrShareURL(NSURL *url) {
     return [clean.firstObject rangeOfCharacterFromSet:disallowed].location == NSNotFound;
 }
 
+static BOOL ApolloLPIsImageChestAlbumURL(NSURL *url) {
+    if (!ApolloLPHostHasSuffix(url, @"imgchest.com")) return NO;
+    if (url.pathExtension.length > 0) return NO;
+    NSArray<NSString *> *parts = [url.path componentsSeparatedByString:@"/"];
+    NSMutableArray<NSString *> *clean = [NSMutableArray array];
+    for (NSString *part in parts) {
+        if (part.length > 0) [clean addObject:part];
+    }
+    if (clean.count != 2 || ![[clean.firstObject lowercaseString] isEqualToString:@"p"]) return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"];
+    return [clean.lastObject rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound;
+}
+
 static BOOL ApolloLPShouldDeferToInlineMedia(NSURL *url) {
     if (![url isKindOfClass:[NSURL class]]) return NO;
     NSString *extension = url.pathExtension.lowercaseString ?: @"";
     NSSet<NSString *> *imageExtensions = [NSSet setWithObjects:@"png", @"jpg", @"jpeg", @"webp", @"gif", nil];
 
     if (ApolloLPIsImgurAlbumOrShareURL(url)) return YES;
+    if (ApolloLPIsImageChestAlbumURL(url)) return YES;
     if ([imageExtensions containsObject:extension] && ApolloLPTrustedInlineImageHost(url)) return YES;
 
     NSString *host = ApolloLPHost(url);
@@ -1571,6 +1585,15 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
     return [NSString stringWithFormat:@"%@-%@-mode%ld-%@", placeholder ? @"placeholder" : @"final", areaName, (long)mode, contextName];
 }
 
+static ASLayoutSpec *ApolloLPEmptyLayoutSpec(void) {
+    Class layoutSpecCls = ApolloLPClass(@"ASLayoutSpec");
+    if (!layoutSpecCls) return nil;
+
+    ASLayoutSpec *empty = [[layoutSpecCls alloc] init];
+    ApolloLPApplyStyleSize([empty style], CGSizeZero);
+    return empty;
+}
+
 %hook _TtC6Apollo14LinkButtonNode
 
 - (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
@@ -1589,6 +1612,13 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
 
     NSString *host = ApolloLPHost(url);
     ApolloLPArea area = ApolloLPAreaForLinkButton((ASDisplayNode *)self);
+    if (ApolloLPIsImageChestAlbumURL(url)) {
+        ApolloLPLogOncePerHost(host, @"suppress-imagechest-card");
+        ApolloLPRestoreHostShell((ASDisplayNode *)self);
+        ASLayoutSpec *empty = ApolloLPEmptyLayoutSpec();
+        return empty ?: %orig;
+    }
+
     NSInteger selectedMode = ApolloLPModeForArea(area);
     if (selectedMode == ApolloLinkPreviewModeOff) {
         ApolloLPLogOncePerHost(host, area == ApolloLPAreaComments ? @"comments-disabled" : @"body-disabled");
