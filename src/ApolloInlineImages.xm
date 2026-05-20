@@ -897,17 +897,18 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
     return (CGFloat)(hv / wv);
 }
 
-@interface ApolloImageChestAlbumViewController : UIViewController <UIScrollViewDelegate>
+@interface ApolloImageChestAlbumViewController : UIViewController <UIScrollViewDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, copy) NSArray<NSDictionary *> *items;
 @property (nonatomic) NSInteger initialIndex;
 @property (nonatomic, strong) UIScrollView *scrollView;
 @property (nonatomic, strong) UILabel *counterLabel;
 @property (nonatomic, strong) UILabel *loadingLabel;
 @property (nonatomic, strong) UIButton *closeButton;
-@property (nonatomic, strong) UIButton *previousButton;
-@property (nonatomic, strong) UIButton *nextButton;
+@property (nonatomic, strong) NSTimer *autoHideTimer;
 @property (nonatomic) NSInteger imageLoadCompletedCount;
 @property (nonatomic) NSInteger imageLoadTotalCount;
+@property (nonatomic) BOOL controlsVisible;
+@property (nonatomic) CGSize lastLayoutSize;
 - (instancetype)initWithItems:(NSArray<NSDictionary *> *)items initialIndex:(NSInteger)initialIndex;
 @end
 
@@ -918,6 +919,7 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
     if (self) {
         _items = [items copy] ?: @[];
         _initialIndex = MAX(0, MIN(initialIndex, (NSInteger)_items.count - 1));
+        _controlsVisible = YES;
         self.modalPresentationStyle = UIModalPresentationFullScreen;
     }
     return self;
@@ -964,23 +966,41 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
         page.backgroundColor = UIColor.blackColor;
         page.tag = 2000 + (NSInteger)i;
 
+        UIScrollView *zoomScrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
+        zoomScrollView.tag = 4000 + (NSInteger)i;
+        zoomScrollView.delegate = self;
+        zoomScrollView.minimumZoomScale = 1.0;
+        zoomScrollView.maximumZoomScale = 4.0;
+        zoomScrollView.bouncesZoom = YES;
+        zoomScrollView.showsHorizontalScrollIndicator = NO;
+        zoomScrollView.showsVerticalScrollIndicator = NO;
+        zoomScrollView.backgroundColor = UIColor.blackColor;
+        zoomScrollView.panGestureRecognizer.enabled = NO;
+        if (@available(iOS 11.0, *)) {
+            zoomScrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+        }
+
         UIImageView *imageView = [[UIImageView alloc] initWithFrame:CGRectZero];
         imageView.tag = 3000 + (NSInteger)i;
         imageView.backgroundColor = UIColor.blackColor;
         imageView.contentMode = UIViewContentModeScaleAspectFit;
-        imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [page addSubview:imageView];
+        [zoomScrollView addSubview:imageView];
+        [page addSubview:zoomScrollView];
         [self.scrollView addSubview:page];
 
         NSURL *imageURL = [self.items[i][@"url"] isKindOfClass:[NSURL class]] ? self.items[i][@"url"] : nil;
         if (imageURL) {
             __weak UIImageView *weakImageView = imageView;
+            __weak UIScrollView *weakZoomScrollView = zoomScrollView;
             __weak ApolloImageChestAlbumViewController *weakSelf = self;
             NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:imageURL
                                                                      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
                 UIImage *image = (!error && data.length > 0) ? [UIImage imageWithData:data] : nil;
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    if (image) weakImageView.image = image;
+                    if (image) {
+                        weakImageView.image = image;
+                        [weakSelf apollo_layoutZoomScrollView:weakZoomScrollView resetZoom:(weakZoomScrollView.zoomScale <= weakZoomScrollView.minimumZoomScale + 0.01)];
+                    }
                     [weakSelf apollo_imageLoadFinished];
                 });
             }];
@@ -1018,16 +1038,20 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
     [self.closeButton addTarget:self action:@selector(apollo_close) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.closeButton];
 
-    self.previousButton = [self apollo_navigationButtonWithTitle:@"‹"];
-    [self.previousButton addTarget:self action:@selector(apollo_previousPage) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.previousButton];
-
-    self.nextButton = [self apollo_navigationButtonWithTitle:@"›"];
-    [self.nextButton addTarget:self action:@selector(apollo_nextPage) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.nextButton];
+    UITapGestureRecognizer *tapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_viewerTapped:)];
+    tapRecognizer.numberOfTapsRequired = 1;
+    tapRecognizer.cancelsTouchesInView = NO;
+    tapRecognizer.delegate = self;
+    [self.view addGestureRecognizer:tapRecognizer];
 
     [self updateCounterForPage:self.initialIndex];
     [self apollo_updateLoadingProgress];
+    [self apollo_setControlsVisible:YES animated:NO reschedule:YES];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self apollo_cancelControlsAutoHide];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -1035,18 +1059,14 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
     CGRect bounds = self.view.bounds;
     self.scrollView.frame = bounds;
     self.scrollView.contentSize = CGSizeMake(bounds.size.width * self.items.count, bounds.size.height);
+    BOOL resetZoom = CGSizeEqualToSize(self.lastLayoutSize, CGSizeZero) || !CGSizeEqualToSize(self.lastLayoutSize, bounds.size);
 
     for (NSUInteger i = 0; i < self.items.count; i++) {
         UIView *page = [self.scrollView viewWithTag:2000 + (NSInteger)i];
         page.frame = CGRectMake(bounds.size.width * i, 0, bounds.size.width, bounds.size.height);
-        UIImageView *imageView = [page viewWithTag:3000 + (NSInteger)i];
-        CGFloat topInset = 44.0;
-        CGFloat bottomInset = 32.0;
-        if (@available(iOS 11.0, *)) {
-            topInset += self.view.safeAreaInsets.top;
-            bottomInset += self.view.safeAreaInsets.bottom;
-        }
-        imageView.frame = CGRectInset(CGRectMake(0, topInset, bounds.size.width, bounds.size.height - topInset - bottomInset), 8.0, 0.0);
+        UIScrollView *zoomScrollView = [page viewWithTag:4000 + (NSInteger)i];
+        zoomScrollView.frame = page.bounds;
+        [self apollo_layoutZoomScrollView:zoomScrollView resetZoom:resetZoom];
     }
 
     CGFloat safeTop = 16.0;
@@ -1054,21 +1074,39 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
     self.closeButton.frame = CGRectMake(bounds.size.width - 84.0, safeTop, 68.0, 32.0);
     self.counterLabel.frame = CGRectMake((bounds.size.width - 86.0) * 0.5, safeTop, 86.0, 28.0);
     self.loadingLabel.frame = CGRectMake((bounds.size.width - 132.0) * 0.5, CGRectGetMaxY(self.counterLabel.frame) + 8.0, 132.0, 26.0);
-    CGFloat buttonSide = 56.0;
-    CGFloat buttonY = (bounds.size.height - buttonSide) * 0.5;
-    self.previousButton.frame = CGRectMake(16.0, buttonY, buttonSide, buttonSide);
-    self.nextButton.frame = CGRectMake(bounds.size.width - buttonSide - 16.0, buttonY, buttonSide, buttonSide);
     [self.scrollView setContentOffset:CGPointMake(bounds.size.width * self.initialIndex, 0.0) animated:NO];
+    self.lastLayoutSize = bounds.size;
 }
 
 - (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
+    if (scrollView != self.scrollView) return;
+    NSInteger page = (NSInteger)llround(scrollView.contentOffset.x / MAX(scrollView.bounds.size.width, 1.0));
+    [self updateCounterForPage:page];
+    [self apollo_scheduleControlsAutoHide];
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (scrollView != self.scrollView) return;
     NSInteger page = (NSInteger)llround(scrollView.contentOffset.x / MAX(scrollView.bounds.size.width, 1.0));
     [self updateCounterForPage:page];
 }
 
-- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
-    NSInteger page = (NSInteger)llround(scrollView.contentOffset.x / MAX(scrollView.bounds.size.width, 1.0));
-    [self updateCounterForPage:page];
+- (UIView *)viewForZoomingInScrollView:(UIScrollView *)scrollView {
+    if (scrollView == self.scrollView) return nil;
+    UIView *imageView = [scrollView viewWithTag:scrollView.tag - 1000];
+    return [imageView isKindOfClass:[UIImageView class]] ? imageView : nil;
+}
+
+- (void)scrollViewWillBeginZooming:(UIScrollView *)scrollView withView:(UIView *)view {
+    if (scrollView == self.scrollView) return;
+    [self apollo_setControlsVisible:NO animated:YES reschedule:NO];
+}
+
+- (void)scrollViewDidZoom:(UIScrollView *)scrollView {
+    if (scrollView == self.scrollView) return;
+    scrollView.panGestureRecognizer.enabled = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01;
+    UIImageView *imageView = (UIImageView *)[self viewForZoomingInScrollView:scrollView];
+    [self apollo_centerImageView:imageView inScrollView:scrollView];
 }
 
 - (void)updateCounterForPage:(NSInteger)page {
@@ -1079,13 +1117,6 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
     NSInteger clamped = MAX(0, MIN(page, (NSInteger)self.items.count - 1));
     self.initialIndex = clamped;
     self.counterLabel.text = [NSString stringWithFormat:@"%ld / %lu", (long)clamped + 1, (unsigned long)self.items.count];
-    BOOL hasMultiple = self.items.count > 1;
-    self.previousButton.hidden = !hasMultiple;
-    self.nextButton.hidden = !hasMultiple;
-    self.previousButton.alpha = clamped > 0 ? 1.0 : 0.25;
-    self.nextButton.alpha = clamped < (NSInteger)self.items.count - 1 ? 1.0 : 0.25;
-    self.previousButton.enabled = clamped > 0;
-    self.nextButton.enabled = clamped < (NSInteger)self.items.count - 1;
 }
 
 - (void)apollo_close {
@@ -1109,34 +1140,110 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
     }
 
     NSInteger percent = (NSInteger)llround(((double)done / (double)total) * 100.0);
-    self.loadingLabel.alpha = 1.0;
+    self.loadingLabel.alpha = self.controlsVisible ? 1.0 : 0.0;
     self.loadingLabel.text = [NSString stringWithFormat:@"Loading %ld / %ld (%ld%%)", (long)done, (long)total, (long)percent];
 }
 
-- (UIButton *)apollo_navigationButtonWithTitle:(NSString *)title {
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    [button setTitle:title forState:UIControlStateNormal];
-    button.tintColor = UIColor.whiteColor;
-    button.titleLabel.font = [UIFont systemFontOfSize:44.0 weight:UIFontWeightRegular];
-    button.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.32];
-    button.layer.cornerRadius = 28.0;
-    button.clipsToBounds = YES;
-    return button;
+- (BOOL)apollo_loadingInProgress {
+    NSInteger total = MAX(self.imageLoadTotalCount, 0);
+    NSInteger done = MAX(0, MIN(self.imageLoadCompletedCount, total));
+    return total > 0 && done < total;
 }
 
-- (void)apollo_setPage:(NSInteger)page animated:(BOOL)animated {
-    NSInteger clamped = MAX(0, MIN(page, (NSInteger)self.items.count - 1));
-    [self updateCounterForPage:clamped];
-    CGFloat width = MAX(self.scrollView.bounds.size.width, 1.0);
-    [self.scrollView setContentOffset:CGPointMake(width * clamped, 0.0) animated:animated];
+- (void)apollo_viewerTapped:(UITapGestureRecognizer *)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateRecognized) return;
+    [self apollo_setControlsVisible:!self.controlsVisible animated:YES reschedule:YES];
 }
 
-- (void)apollo_previousPage {
-    [self apollo_setPage:self.initialIndex - 1 animated:YES];
+- (void)apollo_setControlsVisible:(BOOL)visible animated:(BOOL)animated reschedule:(BOOL)reschedule {
+    self.controlsVisible = visible;
+    self.closeButton.userInteractionEnabled = visible;
+    CGFloat controlsAlpha = visible ? 1.0 : 0.0;
+    CGFloat loadingAlpha = (visible && [self apollo_loadingInProgress]) ? 1.0 : 0.0;
+    void (^changes)(void) = ^{
+        self.closeButton.alpha = controlsAlpha;
+        self.counterLabel.alpha = controlsAlpha;
+        self.loadingLabel.alpha = loadingAlpha;
+    };
+    if (animated) {
+        [UIView animateWithDuration:0.2 animations:changes];
+    } else {
+        changes();
+    }
+    if (visible && reschedule) {
+        [self apollo_scheduleControlsAutoHide];
+    } else if (!visible) {
+        [self apollo_cancelControlsAutoHide];
+    }
 }
 
-- (void)apollo_nextPage {
-    [self apollo_setPage:self.initialIndex + 1 animated:YES];
+- (void)apollo_scheduleControlsAutoHide {
+    [self apollo_cancelControlsAutoHide];
+    if (!self.controlsVisible) return;
+    self.autoHideTimer = [NSTimer scheduledTimerWithTimeInterval:3.0
+                                                          target:self
+                                                        selector:@selector(apollo_autoHideControlsTimerFired:)
+                                                        userInfo:nil
+                                                         repeats:NO];
+}
+
+- (void)apollo_cancelControlsAutoHide {
+    [self.autoHideTimer invalidate];
+    self.autoHideTimer = nil;
+}
+
+- (void)apollo_autoHideControlsTimerFired:(NSTimer *)timer {
+    [self apollo_setControlsVisible:NO animated:YES reschedule:NO];
+}
+
+- (CGRect)apollo_aspectFitFrameForImage:(UIImage *)image inBounds:(CGRect)bounds {
+    if (!image || image.size.width <= 0.0 || image.size.height <= 0.0 || bounds.size.width <= 0.0 || bounds.size.height <= 0.0) {
+        return bounds;
+    }
+    CGFloat scale = MIN(bounds.size.width / image.size.width, bounds.size.height / image.size.height);
+    CGSize size = CGSizeMake(image.size.width * scale, image.size.height * scale);
+    return CGRectMake((bounds.size.width - size.width) * 0.5,
+                      (bounds.size.height - size.height) * 0.5,
+                      size.width,
+                      size.height);
+}
+
+- (void)apollo_layoutZoomScrollView:(UIScrollView *)zoomScrollView resetZoom:(BOOL)resetZoom {
+    if (![zoomScrollView isKindOfClass:[UIScrollView class]]) return;
+    UIImageView *imageView = (UIImageView *)[self viewForZoomingInScrollView:zoomScrollView];
+    if (![imageView isKindOfClass:[UIImageView class]]) return;
+
+    if (resetZoom || zoomScrollView.zoomScale <= zoomScrollView.minimumZoomScale + 0.01) {
+        zoomScrollView.zoomScale = zoomScrollView.minimumZoomScale;
+        imageView.frame = [self apollo_aspectFitFrameForImage:imageView.image inBounds:zoomScrollView.bounds];
+        zoomScrollView.contentSize = imageView.frame.size;
+    }
+    zoomScrollView.panGestureRecognizer.enabled = zoomScrollView.zoomScale > zoomScrollView.minimumZoomScale + 0.01;
+    [self apollo_centerImageView:imageView inScrollView:zoomScrollView];
+}
+
+- (void)apollo_centerImageView:(UIImageView *)imageView inScrollView:(UIScrollView *)zoomScrollView {
+    if (![imageView isKindOfClass:[UIImageView class]] || ![zoomScrollView isKindOfClass:[UIScrollView class]]) return;
+    CGSize boundsSize = zoomScrollView.bounds.size;
+    CGRect frame = imageView.frame;
+    frame.origin.x = frame.size.width < boundsSize.width ? (boundsSize.width - frame.size.width) * 0.5 : 0.0;
+    frame.origin.y = frame.size.height < boundsSize.height ? (boundsSize.height - frame.size.height) * 0.5 : 0.0;
+    imageView.frame = frame;
+    zoomScrollView.contentSize = frame.size;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    UIView *view = touch.view;
+    while (view) {
+        if (view == self.closeButton) return NO;
+        view = view.superview;
+    }
+    return YES;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return YES;
 }
 
 @end
