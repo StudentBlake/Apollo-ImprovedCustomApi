@@ -1,5 +1,9 @@
 // UserDefaults keys
 static NSString *const UDKeyRedditClientId = @"RedditApiClientId";
+// Reddit OAuth client secret. Empty for installed-app credentials; required
+// when the self-hosted notification backend stores per-account creds and
+// performs refresh-token exchanges server-side.
+static NSString *const UDKeyRedditClientSecret = @"RedditApiClientSecret";
 static NSString *const UDKeyImgurClientId = @"ImgurApiClientId";
 static NSString *const UDKeyRedirectURI = @"RedirectURI";
 static NSString *const UDKeyUserAgent = @"UserAgent";
@@ -54,6 +58,14 @@ static NSString *const UDKeyTagFilterSpoiler = @"TagFilterSpoiler";        // gl
 //   "mode"    -> NSString       ("hide" | "blur"; overrides global mode)
 // Missing keys fall back to global settings.
 static NSString *const UDKeyTagFilterSubredditOverrides = @"TagFilterSubredditOverrides";
+
+// Self-hosted notification backend (forked apollo-backend). Empty disables —
+// the legacy hosts remain in the blocklist and requests are silently dropped.
+static NSString *const UDKeyNotificationBackendURL = @"NotificationBackendURL";
+// Optional shared secret matching the backend's REGISTRATION_SECRET env var.
+// When set, sent as X-Registration-Token on the three POST registration
+// endpoints (/v1/device, /v1/device/{apns}/account[s]).
+static NSString *const UDKeyNotificationBackendRegistrationToken = @"NotificationBackendRegistrationToken";
 
 // Rich link preview cards: 0 = Off, 1 = Compact, 2 = Full.
 static NSString *const UDKeyLinkPreviewBodyMode = @"LinkPreviewBodyMode";
