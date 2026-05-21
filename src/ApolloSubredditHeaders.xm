@@ -3,6 +3,8 @@
 #import <objc/runtime.h>
 
 #import "ApolloState.h"
+#import "ApolloCommon.h"
+#import "ApolloSubredditDefaultAssets.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloUserProfileCache.h"
 
@@ -41,6 +43,7 @@ static const void *kApolloSubredditRewrapInProgressKey = &kApolloSubredditRewrap
 // table hook can keep controller/bookkeeping aligned when Apollo swaps the
 // native header during search transitions.
 static const void *kApolloSubredditManagedViewControllerKey = &kApolloSubredditManagedViewControllerKey;
+static const void *kApolloSubredditTeardownMarkerKey = &kApolloSubredditTeardownMarkerKey;
 
 @interface ApolloSubredditHeaderView : UIView
 @property(nonatomic, strong) UIImageView *bannerImageView;
@@ -200,35 +203,6 @@ static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController
     if (self.heightInvalidationBlock) self.heightInvalidationBlock();
 }
 
-// Safety net: if Apollo removes us from a marked wrapper, re-attach on the
-// next turn once the wrapper finishes its own teardown/rebuild work.
-- (void)willMoveToSuperview:(UIView *)newSuperview {
-    UIView *previousSuperview = self.superview;
-    BOOL leavingWrapper = (newSuperview == nil)
-        && previousSuperview != nil
-        && [objc_getAssociatedObject(previousSuperview, kApolloSubredditWrapperMarkerKey) boolValue];
-    [super willMoveToSuperview:newSuperview];
-    if (!leavingWrapper || !sShowSubredditHeaders) return;
-
-    __weak typeof(self) weakSelf = self;
-    __weak UIView *weakWrapper = previousSuperview;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        typeof(self) strongSelf = weakSelf;
-        UIView *strongWrapper = weakWrapper;
-        if (!strongSelf || !strongWrapper) return;
-        if (strongSelf.superview != nil) return;
-        if (![objc_getAssociatedObject(strongWrapper, kApolloSubredditWrapperMarkerKey) boolValue]) return;
-        [strongWrapper addSubview:strongSelf];
-        UIView *originalHeader = objc_getAssociatedObject(strongWrapper, kApolloSubredditOriginalHeaderKey);
-        CGFloat width = strongWrapper.bounds.size.width > 0
-            ? strongWrapper.bounds.size.width
-            : UIScreen.mainScreen.bounds.size.width;
-        ApolloSubredditLayoutWrappedHeader(strongWrapper, strongSelf, originalHeader, width);
-        strongSelf.hidden = NO;
-        strongSelf.alpha = 1.0;
-    });
-}
-
 @end
 
 @implementation ApolloSubredditHeaderWrapperView
@@ -258,6 +232,16 @@ static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController
 @end
 
 #pragma mark - Helpers
+
+static BOOL ApolloSubredditShouldSkipViewController(UIViewController *viewController) {
+    if (!viewController) return YES;
+    if ([objc_getAssociatedObject(viewController, kApolloSubredditTeardownMarkerKey) boolValue]) return YES;
+    if (viewController.isMovingFromParentViewController || viewController.isBeingDismissed) return YES;
+    if (viewController.parentViewController == nil && viewController.presentingViewController == nil && viewController.view.window == nil) {
+        return YES;
+    }
+    return NO;
+}
 
 static NSString *ApolloNormalizedSubredditName(NSString *subredditName) {
     if (![subredditName isKindOfClass:[NSString class]]) return nil;
@@ -469,10 +453,20 @@ static void ApolloSubredditSyncAssociations(UITableView *tableView,
 static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL restoreNativeHeader) {
     if (!viewController) return;
 
+    objc_setAssociatedObject(viewController, kApolloSubredditTeardownMarkerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
     UITableView *tableView = ApolloSubredditFindTableView(viewController);
     ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
     UIView *wrappedHeader = objc_getAssociatedObject(viewController, kApolloSubredditWrappedHeaderKey);
     UIView *originalHeader = objc_getAssociatedObject(viewController, kApolloSubredditOriginalHeaderKey);
+
+    ApolloLog(@"[SubredditHeaders] teardown vc=%p restoreNative=%d subreddit=%@",
+              viewController, restoreNativeHeader, objc_getAssociatedObject(viewController, kApolloSubredditNameKey) ?: @"nil");
+
+    if (header) {
+        header.hostViewController = nil;
+        header.heightInvalidationBlock = nil;
+    }
 
     if (tableView && restoreNativeHeader && wrappedHeader && tableView.tableHeaderView == wrappedHeader) {
         objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -503,6 +497,10 @@ static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL
 
 static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController, NSString *reason) {
     if (!viewController || !sShowSubredditHeaders) return;
+    if (ApolloSubredditShouldSkipViewController(viewController)) {
+        ApolloLog(@"[SubredditHeaders] repair skipped vc=%p reason=%@", viewController, reason ?: @"unknown");
+        return;
+    }
 
     NSArray<NSNumber *> *delays = @[@0.0, @0.08, @0.20, @0.45];
     __weak UIViewController *weakViewController = viewController;
@@ -511,6 +509,7 @@ static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController
                        dispatch_get_main_queue(), ^{
             UIViewController *strongViewController = weakViewController;
             if (!strongViewController || !sShowSubredditHeaders) return;
+            if (ApolloSubredditShouldSkipViewController(strongViewController)) return;
             ApolloSubredditInstallOrUpdateHeader(strongViewController);
         });
     }
@@ -520,6 +519,7 @@ static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController
 
 static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewController) {
     if (!viewController) return;
+    if (ApolloSubredditShouldSkipViewController(viewController)) return;
     // Only install on Apollo's PostsViewController. The notification-refresh
     // walker previously trampled across RedditListVC / InboxListVC /
     // ApolloNavigationController because their nav titles happened to be
@@ -580,6 +580,8 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
 
     NSString *subredditName = ApolloSubredditNameFromViewController(viewController);
     if (subredditName.length == 0) return;
+
+    ApolloLog(@"[SubredditHeaders] install vc=%p subreddit=%@", viewController, subredditName);
 
     CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
     if (!header) {

@@ -20,13 +20,15 @@ SSZIPARCHIVE_FILES = $(wildcard $(SSZIPARCHIVE_DIR)/*.m) \
     $(wildcard $(SSZIPARCHIVE_DIR)/minizip/compat/*.c)
 
 ApolloImprovedCustomApi_FILES = \
-<<<<<<< HEAD
     $(SRC_DIR)/Tweak.xm \
     $(SRC_DIR)/ApolloCommon.m \
     $(SRC_DIR)/ApolloRedditMediaUpload.m \
     $(SRC_DIR)/ApolloNotificationBackend.m \
     $(SRC_DIR)/ApolloUserProfileCache.m \
+    $(SRC_DIR)/ApolloSubredditInfoCache.m \
+    $(SRC_DIR)/ApolloSubredditDefaultAssets.c \
     $(SRC_DIR)/ApolloUserAvatars.xm \
+    $(SRC_DIR)/ApolloSubredditHeaders.xm \
     $(SRC_DIR)/ApolloImageUploadHost.xm \
     $(SRC_DIR)/ApolloPhotoPostComposerScrollFix.xm \
     $(SRC_DIR)/ApolloCreatedAtAlert.xm \
@@ -59,48 +61,6 @@ ApolloImprovedCustomApi_FILES = \
     $(SRC_DIR)/Defaults.m \
     $(SRC_DIR)/UIWindow+Apollo.m \
     $(SRC_DIR)/fishhook.c \
-=======
-    Tweak.xm \
-    ApolloCommon.m \
-    ApolloRedditMediaUpload.m \
-    ApolloUserProfileCache.m \
-    ApolloSubredditInfoCache.m \
-    ApolloSubredditDefaultAssets.c \
-    ApolloUserAvatars.xm \
-    ApolloSubredditHeaders.xm \
-    ApolloImageUploadHost.xm \
-    ApolloPhotoPostComposerScrollFix.xm \
-    ApolloCreatedAtAlert.xm \
-    ApolloState.m \
-    ApolloShareLinks.xm \
-    ApolloMedia.xm \
-    ApolloCommentsCollapse.xm \
-    ApolloLiquidGlass.xm \
-    ApolloLiquidGlassIconPicker.xm \
-    ApolloAutoHideTabBar.xm \
-    ApolloSettings.xm \
-    ApolloRecentlyRead.xm \
-    ApolloSavedCategories.xm \
-    ApolloNativeActionMenus.xm \
-    ApolloTranslation.xm \
-    ApolloVideoUnmute.xm \
-    ApolloVideoSwipeFix.xm \
-    ApolloSubredditIndexPolish.xm \
-    ApolloTagFilters.xm \
-    ApolloLinkPreviewModel.m \
-    ApolloLinkPreviewCache.m \
-    ApolloLinkPreviewFetcher.m \
-    ApolloInlineImages.xm \
-    ApolloInlineLinkPreviews.xm \
-    ApolloTweetBuddy.xm \
-    CustomAPIViewController.m \
-    TranslationSettingsViewController.m \
-    SavedCategoriesViewController.m \
-    TagFiltersViewController.m \
-    Defaults.m \
-    UIWindow+Apollo.m \
-    fishhook.c \
->>>>>>> ed19291 (Add subreddit header metadata and search fix)
     $(SSZIPARCHIVE_FILES)
 ApolloImprovedCustomApi_FRAMEWORKS = UIKit Security AVFoundation OSLog NaturalLanguage ImageIO StoreKit
 ApolloImprovedCustomApi_LIBRARIES = z iconv

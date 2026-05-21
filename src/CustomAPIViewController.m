@@ -606,12 +606,8 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionAPIKeys: return 7; // 5 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
         case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 12 : 11;
-<<<<<<< HEAD:src/CustomAPIViewController.m
-        case SectionSubreddits: return 6;
-        case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
-=======
         case SectionSubreddits: return 7;
->>>>>>> ed19291 (Add subreddit header metadata and search fix):CustomAPIViewController.m
+        case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
         case SectionAbout: return 4; // GitHub + Thanks To + Export Logs + Version
         default: return 0;
     }
