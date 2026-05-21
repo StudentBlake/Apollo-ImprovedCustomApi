@@ -3,6 +3,7 @@
 #import "ApolloCommon.h"
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloState.h"
+#import "ApolloUserProfileCache.h"
 
 static const NSUInteger ApolloLinkPreviewMaxHTMLBytes = 2 * 1024 * 1024;
 
@@ -184,6 +185,31 @@ static BOOL ApolloLinkPreviewIsRedditListingURL(NSURL *url) {
     return YES;
 }
 
+static NSString *ApolloRedditUsernameFromProfileURL(NSURL *url) {
+    NSString *host = url.host.lowercaseString ?: @"";
+    if ([host hasPrefix:@"www."]) host = [host substringFromIndex:4];
+    if (![host isEqualToString:@"reddit.com"] && ![host hasSuffix:@".reddit.com"]) return nil;
+
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (NSString *part in [url.path componentsSeparatedByString:@"/"]) {
+        if (part.length > 0) [parts addObject:part];
+    }
+    if (parts.count < 2) return nil;
+
+    NSString *kind = parts[0].lowercaseString;
+    if (![kind isEqualToString:@"u"] && ![kind isEqualToString:@"user"]) return nil;
+    for (NSString *part in parts) {
+        if ([part.lowercaseString isEqualToString:@"comments"]) return nil;
+    }
+
+    NSString *username = [parts[1] stringByRemovingPercentEncoding] ?: parts[1];
+    if (username.length == 0) return nil;
+    NSMutableCharacterSet *allowed = [[NSCharacterSet alphanumericCharacterSet] mutableCopy];
+    [allowed addCharactersInString:@"_-"];
+    if ([username rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return nil;
+    return username;
+}
+
 // Sniffs the supplied HTML for the giveaway signatures of an anti-bot
 // challenge page (Reddit's "Please wait for verification", Cloudflare's
 // "Just a moment", Akamai, etc.). When we see one we mark the preview as
@@ -227,6 +253,23 @@ static BOOL ApolloLinkPreviewURLIsHTTP(NSURL *url) {
     return [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"];
 }
 
+static NSURL *ApolloLinkPreviewBaseURLForRelativeResource(NSURL *baseURL, NSString *resourceString) {
+    if (!baseURL || resourceString.length == 0) return baseURL;
+    if ([resourceString hasPrefix:@"/"] || [resourceString hasPrefix:@"//"]) return baseURL;
+    if ([resourceString rangeOfString:@"://"].location != NSNotFound) return baseURL;
+    if ([baseURL.path hasSuffix:@"/"] || baseURL.pathExtension.length > 0) return baseURL;
+
+    NSURLComponents *components = [NSURLComponents componentsWithURL:baseURL resolvingAgainstBaseURL:NO];
+    if (!components) return baseURL;
+    NSString *path = components.path ?: @"";
+    if (path.length == 0) path = @"/";
+    if (![path hasSuffix:@"/"]) path = [path stringByAppendingString:@"/"];
+    components.path = path;
+    components.query = nil;
+    components.fragment = nil;
+    return components.URL ?: baseURL;
+}
+
 static NSString *ApolloLinkPreviewHost(NSURL *url) {
     NSString *host = url.host.lowercaseString ?: @"";
     if ([host hasPrefix:@"www."]) host = [host substringFromIndex:4];
@@ -255,7 +298,7 @@ static NSString *ApolloRedditPostIDFromURL(NSURL *url) {
 static NSURL *ApolloLinkPreviewURLFromString(NSString *string, NSURL *baseURL) {
     NSString *clean = ApolloLinkPreviewCleanString(string);
     if (clean.length == 0) return nil;
-    NSURL *url = [NSURL URLWithString:clean relativeToURL:baseURL];
+    NSURL *url = [NSURL URLWithString:clean relativeToURL:ApolloLinkPreviewBaseURLForRelativeResource(baseURL, clean)];
     url = url.absoluteURL;
     return ApolloLinkPreviewURLIsHTTP(url) ? url : nil;
 }
@@ -610,12 +653,14 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             && [cached.title isEqualToString:ApolloLinkPreviewTitleFromURL(url)];
         BOOL staleBluesky = ApolloBlueskyPostPartsFromURL(url)
             && (![cached.previewKind isEqualToString:@"bluesky-post-v2"] || cached.postText.length == 0);
-        if (!botWall && !weakAcademic && !weakGeneric && !staleBluesky) {
+        BOOL staleRedditUser = ApolloRedditUsernameFromProfileURL(url).length > 0
+            && ![cached.previewKind isEqualToString:@"reddit-user-profile"];
+        if (!botWall && !weakAcademic && !weakGeneric && !staleBluesky && !staleRedditUser) {
             if (completion) completion(cached);
             return;
         }
         ApolloLog(@"[LinkPreviews] refetching cached preview host=%@ reason=%@",
-                  logHost, botWall ? @"bot-wall" : (weakAcademic ? @"weak-academic" : (weakGeneric ? @"weak-generic" : @"stale-bluesky")));
+                  logHost, botWall ? @"bot-wall" : (weakAcademic ? @"weak-academic" : (weakGeneric ? @"weak-generic" : (staleBluesky ? @"stale-bluesky" : @"stale-reddit-user"))));
     }
 
     NSString *key = url.absoluteString ?: @"";
@@ -811,7 +856,53 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
     }] resume];
 }
 
++ (void)fetchRedditUserPreviewForURL:(NSURL *)url username:(NSString *)username completion:(ApolloLinkPreviewCompletion)completion {
+    ApolloUserProfileCache *profileCache = [ApolloUserProfileCache sharedCache];
+    ApolloUserProfileInfo *cachedInfo = [profileCache cachedInfoForUsername:username];
+    void (^deliver)(ApolloUserProfileInfo *) = ^(ApolloUserProfileInfo *info) {
+        ApolloLinkPreview *preview = [ApolloLinkPreview new];
+        preview.siteName = @"Reddit";
+        preview.previewKind = @"reddit-user-profile";
+        NSString *canonicalUsername = info.username.length > 0 ? info.username : username;
+        NSString *fallbackHandle = [@"u/" stringByAppendingString:(username ?: @"")];
+        preview.authorHandle = canonicalUsername.length > 0 ? [@"u/" stringByAppendingString:canonicalUsername] : fallbackHandle;
+        preview.authorDisplayName = ApolloLinkPreviewCleanString(info.displayName);
+        preview.title = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : preview.authorHandle;
+        preview.desc = ApolloLinkPreviewTruncatedString(info.aboutText, 160);
+        preview.avatarURL = info.iconURL ?: info.snoovatarURL;
+        preview.imageURL = preview.avatarURL;
+        if (preview.imageURL.absoluteString.length > 0) {
+            preview.imageSize = CGSizeMake(128.0, 128.0);
+        } else {
+            ApolloLinkPreviewApplyFallbackIcon(preview, url);
+        }
+        preview.fetchedAt = [NSDate date];
+        ApolloLog(@"[LinkPreviews] Reddit user preview fetched handle=%@ avatar=%@",
+                  preview.authorHandle ?: fallbackHandle,
+                  preview.avatarURL.absoluteString.length > 0 ? @"YES" : @"NO");
+        completion(preview);
+    };
+
+    if (cachedInfo) {
+        deliver(cachedInfo);
+        return;
+    }
+
+    __block BOOL didDeliver = NO;
+    [profileCache requestInfoForUsername:username completion:^(ApolloUserProfileInfo *info) {
+        if (didDeliver) return;
+        didDeliver = YES;
+        deliver(info);
+    }];
+}
+
 + (void)fetchRedditPreviewForURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion {
+    NSString *username = ApolloRedditUsernameFromProfileURL(url);
+    if (username.length > 0) {
+        [self fetchRedditUserPreviewForURL:url username:username completion:completion];
+        return;
+    }
+
     NSString *postID = ApolloRedditPostIDFromURL(url);
     if (postID.length == 0) {
         if (ApolloLinkPreviewIsRedditListingURL(url)) {
@@ -1212,19 +1303,20 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             ?: ApolloLinkPreviewCleanString(meta[@"dc.publisher"])
             ?: ApolloLinkPreviewCleanString(meta[@"jsonld:site_name"])
             ?: ApolloLinkPreviewHost(url);
-        preview.title = ApolloLinkPreviewCleanString(meta[@"og:title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"twitter:title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"citation_title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"dc.title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"prism.title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"jsonld:title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"title"]);
-        preview.desc = ApolloLinkPreviewTruncatedString(meta[@"og:description"]
+        preview.title = ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"og:title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"twitter:title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"citation_title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"dc.title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"prism.title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"jsonld:title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"title"]);
+        NSString *rawDescription = meta[@"og:description"]
             ?: meta[@"twitter:description"]
             ?: meta[@"citation_abstract"]
             ?: meta[@"dc.description"]
             ?: meta[@"jsonld:description"]
-            ?: meta[@"description"], 220);
+            ?: meta[@"description"];
+        preview.desc = ApolloLinkPreviewTruncatedString(ApolloLinkPreviewStringByStrippingHTMLTags(rawDescription), 220);
         preview.imageURL = ApolloLinkPreviewURLFromString(meta[@"og:image"] ?: meta[@"twitter:image"] ?: meta[@"twitter:image:src"] ?: meta[@"citation_image"] ?: meta[@"jsonld:image"], url);
         preview.fetchedAt = [NSDate date];
 
