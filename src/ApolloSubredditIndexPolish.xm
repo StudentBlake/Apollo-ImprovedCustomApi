@@ -14,6 +14,11 @@ static char kApolloSubredditStarProxyKey;
 static char kApolloSubredditStarProxyLoggedKey;
 static char kApolloSubredditCellMarginsAppliedKey;
 static char kApolloSubredditRowPolishAppliedKey;
+static char kApolloSubredditOriginalSelectionStyleKey;
+static char kApolloSubredditOriginalSelectedBackgroundKey;
+static char kApolloSubredditOriginalMultipleSelectedBackgroundKey;
+static char kApolloSubredditModernSelectionChromeAppliedKey;
+static char kApolloSubredditModernPressOverlayKey;
 static char kApolloSubredditHeaderSeparatorKey;
 static char kApolloSubredditHeaderGradientLayerKey;
 static char kApolloSubredditHeaderLoggedKey;
@@ -1159,6 +1164,134 @@ static BOOL ApolloSubredditIndexEnsureSubredditTable(UITableView *tableView) {
     return YES;
 }
 
+static UIView *ApolloSubredditIndexModernSelectionBackground(UITableView *tableView, UITableViewCell *cell) {
+    UIView *view = [[UIView alloc] initWithFrame:CGRectZero];
+    view.userInteractionEnabled = NO;
+    view.opaque = NO;
+    UIColor *accentColor = ApolloSubredditIndexThemeAccentColor(tableView, cell);
+    UIColor *overlayColor = [accentColor colorWithAlphaComponent:0.10];
+    view.backgroundColor = overlayColor;
+    view.layer.backgroundColor = overlayColor.CGColor;
+    view.layer.borderWidth = 0.0;
+    view.layer.shadowOpacity = 0.0;
+    view.layer.sublayers = nil;
+    return view;
+}
+
+static void ApolloSubredditIndexRemoveModernPressOverlay(UITableViewCell *cell) {
+    UIView *overlay = objc_getAssociatedObject(cell, &kApolloSubredditModernPressOverlayKey);
+    [overlay removeFromSuperview];
+    objc_setAssociatedObject(cell, &kApolloSubredditModernPressOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static UIView *ApolloSubredditIndexModernPressOverlay(UITableView *tableView, UITableViewCell *cell) {
+    UIView *container = cell.contentView ?: (UIView *)cell;
+    UIView *overlay = objc_getAssociatedObject(cell, &kApolloSubredditModernPressOverlayKey);
+    if (!overlay || overlay.superview != container) {
+        [overlay removeFromSuperview];
+        overlay = [[UIView alloc] initWithFrame:container.bounds];
+        overlay.userInteractionEnabled = NO;
+        overlay.opaque = NO;
+        overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        overlay.alpha = 0.0;
+        overlay.layer.borderWidth = 0.0;
+        overlay.layer.shadowOpacity = 0.0;
+        objc_setAssociatedObject(cell, &kApolloSubredditModernPressOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [container insertSubview:overlay atIndex:0];
+    }
+
+    UIColor *accentColor = ApolloSubredditIndexThemeAccentColor(tableView, cell);
+    UIColor *overlayColor = [accentColor colorWithAlphaComponent:0.16];
+    overlay.frame = container.bounds;
+    overlay.backgroundColor = overlayColor;
+    overlay.layer.backgroundColor = overlayColor.CGColor;
+    overlay.layer.borderWidth = 0.0;
+    [container sendSubviewToBack:overlay];
+    return overlay;
+}
+
+static void ApolloSubredditIndexSetModernPressOverlayVisible(UITableViewCell *cell, UITableView *tableView, BOOL visible, BOOL animated) {
+    if (!cell) return;
+    if (!sModernSubredditDividers || !tableView || !ApolloSubredditIndexEnsureSubredditTable(tableView)) {
+        ApolloSubredditIndexRemoveModernPressOverlay(cell);
+        return;
+    }
+
+    UIView *overlay = ApolloSubredditIndexModernPressOverlay(tableView, cell);
+    CGFloat targetAlpha = visible ? 1.0 : 0.0;
+    void (^changes)(void) = ^{
+        overlay.alpha = targetAlpha;
+    };
+    if (animated) {
+        [UIView animateWithDuration:(visible ? 0.06 : 0.16)
+                              delay:0.0
+                            options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                         animations:changes
+                         completion:nil];
+    } else {
+        changes();
+    }
+}
+
+static void ApolloSubredditIndexRestoreCellSelectionChrome(UITableViewCell *cell) {
+    ApolloSubredditIndexRemoveModernPressOverlay(cell);
+    if (![objc_getAssociatedObject(cell, &kApolloSubredditModernSelectionChromeAppliedKey) boolValue]) return;
+
+    NSNumber *originalStyle = objc_getAssociatedObject(cell, &kApolloSubredditOriginalSelectionStyleKey);
+    UIView *originalSelectedBackground = objc_getAssociatedObject(cell, &kApolloSubredditOriginalSelectedBackgroundKey);
+    UIView *originalMultipleSelectedBackground = objc_getAssociatedObject(cell, &kApolloSubredditOriginalMultipleSelectedBackgroundKey);
+    if ([originalStyle respondsToSelector:@selector(integerValue)]) {
+        cell.selectionStyle = (UITableViewCellSelectionStyle)originalStyle.integerValue;
+    }
+    cell.selectedBackgroundView = originalSelectedBackground;
+    cell.multipleSelectionBackgroundView = originalMultipleSelectedBackground;
+
+    objc_setAssociatedObject(cell, &kApolloSubredditOriginalSelectionStyleKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, &kApolloSubredditOriginalSelectedBackgroundKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, &kApolloSubredditOriginalMultipleSelectedBackgroundKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, &kApolloSubredditModernSelectionChromeAppliedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloSubredditIndexApplyCellSelectionChrome(UITableViewCell *cell, UITableView *tableView) {
+    if (!cell || !tableView || !ApolloSubredditIndexEnsureSubredditTable(tableView)) return;
+
+    BOOL hideSeparators = sModernSubredditDividers;
+    UITableViewCellSeparatorStyle separatorStyle = hideSeparators ? UITableViewCellSeparatorStyleNone : UITableViewCellSeparatorStyleSingleLine;
+    if (tableView.separatorStyle != separatorStyle) {
+        tableView.separatorStyle = separatorStyle;
+    }
+
+    BOOL appliedModernChrome = [objc_getAssociatedObject(cell, &kApolloSubredditModernSelectionChromeAppliedKey) boolValue];
+    if (sModernSubredditDividers) {
+        if (!appliedModernChrome) {
+            objc_setAssociatedObject(cell, &kApolloSubredditOriginalSelectionStyleKey, @(cell.selectionStyle), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(cell, &kApolloSubredditOriginalSelectedBackgroundKey, cell.selectedBackgroundView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(cell, &kApolloSubredditOriginalMultipleSelectedBackgroundKey, cell.multipleSelectionBackgroundView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(cell, &kApolloSubredditModernSelectionChromeAppliedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        cell.selectedBackgroundView = ApolloSubredditIndexModernSelectionBackground(tableView, cell);
+        cell.multipleSelectionBackgroundView = ApolloSubredditIndexModernSelectionBackground(tableView, cell);
+        cell.backgroundView.layer.borderWidth = 0.0;
+        cell.selectedBackgroundView.layer.borderWidth = 0.0;
+        cell.multipleSelectionBackgroundView.layer.borderWidth = 0.0;
+        ApolloSubredditIndexSetModernPressOverlayVisible(cell, tableView, cell.highlighted || cell.selected, NO);
+        return;
+    }
+
+    if (appliedModernChrome) ApolloSubredditIndexRestoreCellSelectionChrome(cell);
+}
+
+static void ApolloSubredditIndexApplyModernPressedCellSelectionChrome(UITableViewCell *cell) {
+    if (!sModernSubredditDividers || !cell) return;
+    UITableView *tableView = ApolloSubredditIndexTableForCell(cell);
+    if (!ApolloSubredditIndexEnsureSubredditTable(tableView)) return;
+
+    ApolloSubredditIndexApplyCellSelectionChrome(cell, tableView);
+    ApolloSubredditIndexSetModernPressOverlayVisible(cell, tableView, cell.highlighted || cell.selected, NO);
+}
+
 static void ApolloSubredditIndexPrepareCellForDisplay(UITableView *tableView, UITableViewCell *cell) {
     if (!cell || !ApolloSubredditIndexEnsureSubredditTable(tableView)) return;
 
@@ -1168,6 +1301,7 @@ static void ApolloSubredditIndexPrepareCellForDisplay(UITableView *tableView, UI
     if (redditListCellClass && [cell isKindOfClass:redditListCellClass]) {
         ApolloSubredditIndexApplyRedditListCellPolishOnce(cell);
     }
+    ApolloSubredditIndexApplyCellSelectionChrome(cell, tableView);
 }
 
 static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tableView) {
@@ -1402,6 +1536,7 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
 
 - (void)prepareForReuse {
     %orig;
+    ApolloSubredditIndexRestoreCellSelectionChrome((UITableViewCell *)self);
     objc_setAssociatedObject((UITableViewCell *)self, &kApolloSubredditCellMarginsAppliedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject((UITableViewCell *)self, &kApolloSubredditRowPolishAppliedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -1413,7 +1548,38 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
 
     UITableView *tableView = ApolloSubredditIndexTableForCell((UITableViewCell *)self);
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
+        ApolloSubredditIndexApplyCellSelectionChrome((UITableViewCell *)self, tableView);
         ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
+    }
+}
+
+- (void)setHighlighted:(BOOL)highlighted animated:(BOOL)animated {
+    %orig;
+    UITableView *tableView = ApolloSubredditIndexTableForCell((UITableViewCell *)self);
+    ApolloSubredditIndexApplyModernPressedCellSelectionChrome((UITableViewCell *)self);
+    ApolloSubredditIndexSetModernPressOverlayVisible((UITableViewCell *)self, tableView, highlighted || ((UITableViewCell *)self).selected, animated);
+    if (highlighted) {
+        __weak UITableViewCell *weakCell = (UITableViewCell *)self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UITableView *strongTable = ApolloSubredditIndexTableForCell(weakCell);
+            ApolloSubredditIndexApplyModernPressedCellSelectionChrome(weakCell);
+            ApolloSubredditIndexSetModernPressOverlayVisible(weakCell, strongTable, weakCell.highlighted || weakCell.selected, NO);
+        });
+    }
+}
+
+- (void)setSelected:(BOOL)selected animated:(BOOL)animated {
+    %orig;
+    UITableView *tableView = ApolloSubredditIndexTableForCell((UITableViewCell *)self);
+    ApolloSubredditIndexApplyModernPressedCellSelectionChrome((UITableViewCell *)self);
+    ApolloSubredditIndexSetModernPressOverlayVisible((UITableViewCell *)self, tableView, selected || ((UITableViewCell *)self).highlighted, animated);
+    if (selected) {
+        __weak UITableViewCell *weakCell = (UITableViewCell *)self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UITableView *strongTable = ApolloSubredditIndexTableForCell(weakCell);
+            ApolloSubredditIndexApplyModernPressedCellSelectionChrome(weakCell);
+            ApolloSubredditIndexSetModernPressOverlayVisible(weakCell, strongTable, weakCell.highlighted || weakCell.selected, NO);
+        });
     }
 }
 
@@ -1424,6 +1590,7 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
 
     UITableView *tableView = ApolloSubredditIndexTableForCell((UITableViewCell *)self);
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
+        ApolloSubredditIndexApplyCellSelectionChrome((UITableViewCell *)self, tableView);
         ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
     }
 }
