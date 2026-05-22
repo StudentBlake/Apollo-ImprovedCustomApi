@@ -1,9 +1,12 @@
+#import <PhotosUI/PhotosUI.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
 #import "ApolloState.h"
 #import "ApolloCommon.h"
+#import "ApolloSubredditCustomBannerCache.h"
+#import "ApolloSubredditCustomIconCache.h"
 #import "ApolloSubredditDefaultAssets.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloUserProfileCache.h"
@@ -44,6 +47,22 @@ static const void *kApolloSubredditRewrapInProgressKey = &kApolloSubredditRewrap
 // native header during search transitions.
 static const void *kApolloSubredditManagedViewControllerKey = &kApolloSubredditManagedViewControllerKey;
 static const void *kApolloSubredditTeardownMarkerKey = &kApolloSubredditTeardownMarkerKey;
+static const void *kApolloSubredditBannerPickerCoordinatorKey = &kApolloSubredditBannerPickerCoordinatorKey;
+static const void *kApolloSubredditIconPickerCoordinatorKey = &kApolloSubredditIconPickerCoordinatorKey;
+static const void *kApolloSubredditInstallInProgressKey = &kApolloSubredditInstallInProgressKey;
+
+typedef NS_ENUM(NSInteger, ApolloSubredditHeaderAssetKind) {
+    ApolloSubredditHeaderAssetKindBanner = 0,
+    ApolloSubredditHeaderAssetKindIcon = 1,
+};
+
+@class ApolloSubredditHeaderView;
+
+@interface ApolloSubredditHeaderPickerCoordinator : NSObject <PHPickerViewControllerDelegate>
+@property(nonatomic, weak) ApolloSubredditHeaderView *headerView;
+@property(nonatomic, copy) NSString *subredditName;
+@property(nonatomic) ApolloSubredditHeaderAssetKind assetKind;
+@end
 
 @interface ApolloSubredditHeaderView : UIView
 @property(nonatomic, strong) UIImageView *bannerImageView;
@@ -53,8 +72,13 @@ static const void *kApolloSubredditTeardownMarkerKey = &kApolloSubredditTeardown
 @property(nonatomic, strong) UILabel *aboutLabel;
 @property(nonatomic, weak) UIViewController *hostViewController;
 @property(nonatomic, copy) NSString *subredditName;
+@property(nonatomic) BOOL usesCustomBanner;
+@property(nonatomic) BOOL usesCustomIcon;
 @property(nonatomic, copy) void (^heightInvalidationBlock)(void);
 - (void)applyInfo:(ApolloSubredditInfo *)info fallbackSubredditName:(NSString *)subredditName;
+- (void)apollo_bannerTapped;
+- (void)apollo_iconTapped;
+- (void)apollo_presentPhotoPickerForAssetKind:(ApolloSubredditHeaderAssetKind)assetKind;
 - (CGFloat)preferredHeightForWidth:(CGFloat)width;
 @end
 
@@ -64,6 +88,11 @@ static const void *kApolloSubredditTeardownMarkerKey = &kApolloSubredditTeardown
 @end
 
 static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSString *subredditName, BOOL forceRefresh);
+static void ApolloSubredditApplyBannerForHeader(ApolloSubredditHeaderView *header, NSString *subredditName, ApolloSubredditInfo *info);
+static void ApolloSubredditApplyIconForHeader(ApolloSubredditHeaderView *header, NSString *subredditName, ApolloSubredditInfo *info);
+static void ApolloSubredditDismissHeaderPickersForViewController(UIViewController *viewController);
+static void ApolloSubredditRefreshBannerForSubreddit(NSString *subredditName);
+static void ApolloSubredditRefreshIconForSubreddit(NSString *subredditName);
 static void ApolloSubredditLayoutWrappedHeader(UIView *wrappedHeader,
                                                ApolloSubredditHeaderView *header,
                                                UIView *originalHeader,
@@ -85,15 +114,27 @@ static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController
         self.backgroundColor = [UIColor clearColor];
 
         _bannerImageView = [[UIImageView alloc] init];
-        _bannerImageView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.12];
+        _bannerImageView.backgroundColor = [UIColor clearColor];
         _bannerImageView.contentMode = UIViewContentModeScaleAspectFill;
         _bannerImageView.clipsToBounds = YES;
+        _bannerImageView.userInteractionEnabled = YES;
+        _bannerImageView.isAccessibilityElement = YES;
+        _bannerImageView.accessibilityLabel = @"Subreddit banner";
+        _bannerImageView.accessibilityHint = @"Double tap to change banner photo";
+        UITapGestureRecognizer *bannerTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_bannerTapped)];
+        [_bannerImageView addGestureRecognizer:bannerTap];
         [self addSubview:_bannerImageView];
 
         _iconImageView = [[UIImageView alloc] init];
-        _iconImageView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.15];
+        _iconImageView.backgroundColor = [UIColor clearColor];
         _iconImageView.contentMode = UIViewContentModeScaleAspectFill;
         _iconImageView.clipsToBounds = YES;
+        _iconImageView.userInteractionEnabled = YES;
+        _iconImageView.isAccessibilityElement = YES;
+        _iconImageView.accessibilityLabel = @"Subreddit icon";
+        _iconImageView.accessibilityHint = @"Double tap to change subreddit icon";
+        UITapGestureRecognizer *iconTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_iconTapped)];
+        [_iconImageView addGestureRecognizer:iconTap];
         [self addSubview:_iconImageView];
 
         _displayNameLabel = [[UILabel alloc] init];
@@ -187,9 +228,17 @@ static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController
     CGFloat aboutWidth = MAX(120.0, width - ApolloSubredditSidePadding * 2.0);
     CGFloat aboutHeight = [self apollo_aboutHeightForWidth:aboutWidth];
     self.aboutLabel.frame = CGRectMake(ApolloSubredditSidePadding, aboutY, aboutWidth, aboutHeight);
+
+    [self bringSubviewToFront:self.iconImageView];
+    [self bringSubviewToFront:self.displayNameLabel];
+    [self bringSubviewToFront:self.nameLabel];
+    [self bringSubviewToFront:self.aboutLabel];
 }
 
 - (void)applyInfo:(ApolloSubredditInfo *)info fallbackSubredditName:(NSString *)subredditName {
+    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat heightBefore = [self preferredHeightForWidth:width];
+
     NSString *displayName = info.displayName.length > 0 ? info.displayName : [@"r/" stringByAppendingString:subredditName ?: @""];
     self.displayNameLabel.text = displayName.length > 0 ? displayName : nil;
     self.nameLabel.text = subredditName.length > 0 ? [@"r/" stringByAppendingString:subredditName] : nil;
@@ -200,7 +249,149 @@ static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController
     self.nameLabel.hidden = self.nameLabel.text.length == 0;
     self.aboutLabel.hidden = self.aboutLabel.text.length == 0;
     [self setNeedsLayout];
-    if (self.heightInvalidationBlock) self.heightInvalidationBlock();
+
+    CGFloat heightAfter = [self preferredHeightForWidth:width];
+    if (heightBefore != heightAfter && self.heightInvalidationBlock) {
+        self.heightInvalidationBlock();
+    }
+}
+
+- (void)apollo_presentPhotoPickerForAssetKind:(ApolloSubredditHeaderAssetKind)assetKind {
+    UIViewController *host = self.hostViewController;
+    NSString *subredditName = self.subredditName;
+    if (!host || subredditName.length == 0 || !sShowSubredditHeaders) return;
+    if (@available(iOS 14.0, *)) {
+        PHPickerConfiguration *config = [[PHPickerConfiguration alloc] init];
+        config.filter = [PHPickerFilter imagesFilter];
+        config.selectionLimit = 1;
+        PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:config];
+        ApolloSubredditHeaderPickerCoordinator *coordinator = [[ApolloSubredditHeaderPickerCoordinator alloc] init];
+        coordinator.headerView = self;
+        coordinator.subredditName = subredditName;
+        coordinator.assetKind = assetKind;
+        picker.delegate = coordinator;
+        const void *key = assetKind == ApolloSubredditHeaderAssetKindIcon
+            ? kApolloSubredditIconPickerCoordinatorKey
+            : kApolloSubredditBannerPickerCoordinatorKey;
+        objc_setAssociatedObject(host, key, coordinator, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [host presentViewController:picker animated:YES completion:nil];
+    }
+}
+
+- (void)apollo_bannerTapped {
+    UIViewController *host = self.hostViewController;
+    NSString *subredditName = self.subredditName;
+    if (!host || subredditName.length == 0 || !sShowSubredditHeaders) return;
+
+    ApolloSubredditCustomBannerCache *customCache = [ApolloSubredditCustomBannerCache sharedCache];
+    BOOL hasCustom = [customCache hasCustomBannerForSubreddit:subredditName];
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Choose Photo"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        [weakSelf apollo_presentPhotoPickerForAssetKind:ApolloSubredditHeaderAssetKindBanner];
+    }]];
+    if (hasCustom) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Remove Custom Banner"
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(__unused UIAlertAction *action) {
+            [customCache removeBannerForSubreddit:subredditName];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        sheet.popoverPresentationController.sourceView = self.bannerImageView;
+        sheet.popoverPresentationController.sourceRect = self.bannerImageView.bounds;
+    }
+    [host presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)apollo_iconTapped {
+    UIViewController *host = self.hostViewController;
+    NSString *subredditName = self.subredditName;
+    if (!host || subredditName.length == 0 || !sShowSubredditHeaders) return;
+
+    ApolloSubredditCustomIconCache *customCache = [ApolloSubredditCustomIconCache sharedCache];
+    BOOL hasCustom = [customCache hasCustomIconForSubreddit:subredditName];
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Choose Photo"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        [weakSelf apollo_presentPhotoPickerForAssetKind:ApolloSubredditHeaderAssetKindIcon];
+    }]];
+    if (hasCustom) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Remove Custom Icon"
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(__unused UIAlertAction *action) {
+            [customCache removeIconForSubreddit:subredditName];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        sheet.popoverPresentationController.sourceView = self.iconImageView;
+        sheet.popoverPresentationController.sourceRect = self.iconImageView.bounds;
+    }
+    [host presentViewController:sheet animated:YES completion:nil];
+}
+
+@end
+
+@implementation ApolloSubredditHeaderPickerCoordinator
+
+- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
+    UIViewController *presenter = picker.presentingViewController;
+    ApolloSubredditHeaderView *header = self.headerView;
+    NSString *subredditName = self.subredditName;
+    ApolloSubredditHeaderAssetKind assetKind = self.assetKind;
+    const void *key = assetKind == ApolloSubredditHeaderAssetKindIcon
+        ? kApolloSubredditIconPickerCoordinatorKey
+        : kApolloSubredditBannerPickerCoordinatorKey;
+    [picker dismissViewControllerAnimated:YES completion:^{
+        if (presenter) {
+            objc_setAssociatedObject(presenter, key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }];
+
+    PHPickerResult *result = results.firstObject;
+    if (!result || subredditName.length == 0) return;
+
+    NSItemProvider *provider = result.itemProvider;
+    if (![provider canLoadObjectOfClass:[UIImage class]]) return;
+
+    [provider loadObjectOfClass:[UIImage class] completionHandler:^(__kindof id<NSItemProviderReading> object, NSError *error) {
+        if (error || ![object isKindOfClass:[UIImage class]]) return;
+        UIImage *image = (UIImage *)object;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSError *saveError = nil;
+            BOOL saved = NO;
+            if (assetKind == ApolloSubredditHeaderAssetKindIcon) {
+                saved = [[ApolloSubredditCustomIconCache sharedCache] saveIcon:image forSubreddit:subredditName error:&saveError];
+            } else {
+                saved = [[ApolloSubredditCustomBannerCache sharedCache] saveBanner:image forSubreddit:subredditName error:&saveError];
+            }
+            if (saved) return;
+
+            UIViewController *host = header.hostViewController;
+            if (!host) return;
+            NSString *title = assetKind == ApolloSubredditHeaderAssetKindIcon ? @"Icon Not Saved" : @"Banner Not Saved";
+            NSString *message = saveError.localizedDescription ?: @"Could not save the selected image.";
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                           message:message
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [host presentViewController:alert animated:YES completion:nil];
+        });
+    }];
 }
 
 @end
@@ -344,12 +535,175 @@ static UITableView *ApolloSubredditFindTableView(UIViewController *viewControlle
     return (UITableView *)ApolloSubredditFindSubviewOfClass(viewController.view, [UITableView class]);
 }
 
+static UIImage *ApolloSubredditPlaceholderIconForUserInterfaceStyle(UIUserInterfaceStyle style) {
+    static UIImage *darkIcon = nil;
+    static UIImage *lightIcon = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        CGFloat diameter = ApolloSubredditIconDiameter;
+        CGFloat scale = UIScreen.mainScreen.scale > 0.0 ? UIScreen.mainScreen.scale : 2.0;
+        CGSize size = CGSizeMake(diameter, diameter);
+        UIColor *darkFill = [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
+        UIColor *lightFill = [UIColor colorWithRed:218.0 / 255.0 green:219.0 / 255.0 blue:220.0 / 255.0 alpha:1.0];
+
+        UIImage *(^drawIcon)(UIColor *, UIColor *) = ^UIImage *(UIColor *fill, UIColor *textColor) {
+            UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+            format.scale = scale;
+            format.opaque = YES;
+            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+            return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+                [fill setFill];
+                [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0.0, 0.0, diameter, diameter)] fill];
+
+                NSString *label = @"r/";
+                UIFont *font = [UIFont systemFontOfSize:diameter * 0.48 weight:UIFontWeightSemibold];
+                NSDictionary *attrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: textColor};
+                CGSize textSize = [label sizeWithAttributes:attrs];
+                CGRect textRect = CGRectMake((diameter - textSize.width) / 2.0,
+                                             (diameter - textSize.height) / 2.0,
+                                             textSize.width,
+                                             textSize.height);
+                [label drawInRect:textRect withAttributes:attrs];
+            }];
+        };
+
+        darkIcon = drawIcon(darkFill, UIColor.whiteColor);
+        lightIcon = drawIcon(lightFill, UIColor.blackColor);
+    });
+
+    UIUserInterfaceStyle resolved = style;
+    if (resolved == UIUserInterfaceStyleUnspecified) {
+        resolved = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
+    }
+    if (@available(iOS 13.0, *)) {
+        return resolved == UIUserInterfaceStyleDark ? darkIcon : lightIcon;
+    }
+    return darkIcon ?: lightIcon;
+}
+
 static UIImage *ApolloSubredditPlaceholderIcon(void) {
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(ApolloSubredditIconDiameter, ApolloSubredditIconDiameter)];
-    return [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-        [[UIColor secondarySystemFillColor] setFill];
-        [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0.0, 0.0, ApolloSubredditIconDiameter, ApolloSubredditIconDiameter)] fill];
-    }];
+    UIUserInterfaceStyle style = UIUserInterfaceStyleUnspecified;
+    if (@available(iOS 13.0, *)) {
+        style = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
+    }
+    return ApolloSubredditPlaceholderIconForUserInterfaceStyle(style);
+}
+
+static UIImage *ApolloSubredditPlaceholderBanner(void) {
+    static UIImage *cached = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSData *data = [NSData dataWithBytesNoCopy:(void *)ApolloSubredditDefaultBannerJPG
+                                            length:ApolloSubredditDefaultBannerJPG_len
+                                      freeWhenDone:NO];
+        cached = [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
+    });
+    return cached;
+}
+
+static void ApolloSubredditApplyPlaceholderBanner(ApolloSubredditHeaderView *header) {
+    if (!header) return;
+    UIImage *placeholder = ApolloSubredditPlaceholderBanner();
+    header.bannerImageView.image = placeholder;
+    header.bannerImageView.backgroundColor = [UIColor clearColor];
+}
+
+static void ApolloSubredditApplyPlaceholderIcon(ApolloSubredditHeaderView *header) {
+    if (!header) return;
+    header.iconImageView.image = ApolloSubredditPlaceholderIcon();
+    header.iconImageView.backgroundColor = [UIColor clearColor];
+}
+
+static void ApolloSubredditDismissHeaderPickersForViewController(UIViewController *viewController) {
+    if (!viewController) return;
+    UIViewController *presented = viewController.presentedViewController;
+    if ([presented isKindOfClass:[PHPickerViewController class]]) {
+        [presented dismissViewControllerAnimated:NO completion:nil];
+    }
+    objc_setAssociatedObject(viewController, kApolloSubredditBannerPickerCoordinatorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(viewController, kApolloSubredditIconPickerCoordinatorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloSubredditApplyBannerForHeader(ApolloSubredditHeaderView *header, NSString *subredditName, ApolloSubredditInfo *info) {
+    if (!header || subredditName.length == 0) return;
+
+    ApolloSubredditCustomBannerCache *customCache = [ApolloSubredditCustomBannerCache sharedCache];
+    UIImage *customBanner = [customCache cachedBannerForSubreddit:subredditName];
+    if (customBanner) {
+        header.bannerImageView.image = customBanner;
+        header.bannerImageView.backgroundColor = [UIColor clearColor];
+        header.usesCustomBanner = YES;
+        return;
+    }
+
+    header.usesCustomBanner = NO;
+    if (info.bannerURL) {
+        ApolloUserProfileCache *imageCache = [ApolloUserProfileCache sharedCache];
+        UIImage *banner = [imageCache cachedImageForURL:info.bannerURL];
+        if (banner) {
+            header.bannerImageView.image = banner;
+            header.bannerImageView.backgroundColor = [UIColor clearColor];
+            return;
+        }
+
+        __weak ApolloSubredditHeaderView *weakHeader = header;
+        NSURL *bannerURL = info.bannerURL;
+        [imageCache requestImageForURL:bannerURL completion:^(UIImage *image) {
+            ApolloSubredditHeaderView *strongHeader = weakHeader;
+            if (!strongHeader || strongHeader.usesCustomBanner) return;
+            if ([[ApolloSubredditCustomBannerCache sharedCache] hasCustomBannerForSubreddit:subredditName]) return;
+            if (image) {
+                strongHeader.bannerImageView.image = image;
+                strongHeader.bannerImageView.backgroundColor = [UIColor clearColor];
+            } else {
+                ApolloSubredditApplyPlaceholderBanner(strongHeader);
+            }
+        }];
+        return;
+    }
+
+    ApolloSubredditApplyPlaceholderBanner(header);
+}
+
+static void ApolloSubredditApplyIconForHeader(ApolloSubredditHeaderView *header, NSString *subredditName, ApolloSubredditInfo *info) {
+    if (!header || subredditName.length == 0) return;
+
+    ApolloSubredditCustomIconCache *customCache = [ApolloSubredditCustomIconCache sharedCache];
+    UIImage *customIcon = [customCache cachedIconForSubreddit:subredditName];
+    if (customIcon) {
+        header.iconImageView.image = customIcon;
+        header.iconImageView.backgroundColor = [UIColor clearColor];
+        header.usesCustomIcon = YES;
+        return;
+    }
+
+    header.usesCustomIcon = NO;
+    if (info.iconURL) {
+        ApolloUserProfileCache *imageCache = [ApolloUserProfileCache sharedCache];
+        UIImage *icon = [imageCache cachedImageForURL:info.iconURL];
+        if (icon) {
+            header.iconImageView.image = icon;
+            header.iconImageView.backgroundColor = [UIColor clearColor];
+            return;
+        }
+
+        __weak ApolloSubredditHeaderView *weakHeader = header;
+        NSURL *iconURL = info.iconURL;
+        [imageCache requestImageForURL:iconURL completion:^(UIImage *image) {
+            ApolloSubredditHeaderView *strongHeader = weakHeader;
+            if (!strongHeader || strongHeader.usesCustomIcon) return;
+            if ([[ApolloSubredditCustomIconCache sharedCache] hasCustomIconForSubreddit:subredditName]) return;
+            if (image) {
+                strongHeader.iconImageView.image = image;
+                strongHeader.iconImageView.backgroundColor = [UIColor clearColor];
+            } else {
+                ApolloSubredditApplyPlaceholderIcon(strongHeader);
+            }
+        }];
+        return;
+    }
+
+    ApolloSubredditApplyPlaceholderIcon(header);
 }
 
 static ApolloSubredditHeaderView *ApolloSubredditCreateHeader(CGFloat width) {
@@ -362,36 +716,25 @@ static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSStrin
     if (!header || subredditName.length == 0) return;
 
     ApolloSubredditInfoCache *cache = [ApolloSubredditInfoCache sharedCache];
-    ApolloUserProfileCache *imageCache = [ApolloUserProfileCache sharedCache];
     ApolloSubredditInfo *cachedInfo = [cache cachedInfoForSubreddit:subredditName];
 
     void (^applyInfo)(ApolloSubredditInfo *) = ^(ApolloSubredditInfo *info) {
-        if (!info) return;
+        if (!info) {
+            ApolloSubredditApplyBannerForHeader(header, subredditName, nil);
+            ApolloSubredditApplyIconForHeader(header, subredditName, nil);
+            return;
+        }
         [header applyInfo:info fallbackSubredditName:subredditName];
-
-        if (info.iconURL) {
-            UIImage *icon = [imageCache cachedImageForURL:info.iconURL];
-            if (icon) {
-                header.iconImageView.image = icon;
-            } else {
-                [imageCache requestImageForURL:info.iconURL completion:^(UIImage *image) {
-                    if (image) header.iconImageView.image = image;
-                }];
-            }
-        }
-        if (info.bannerURL) {
-            UIImage *banner = [imageCache cachedImageForURL:info.bannerURL];
-            if (banner) {
-                header.bannerImageView.image = banner;
-            } else {
-                [imageCache requestImageForURL:info.bannerURL completion:^(UIImage *image) {
-                    if (image) header.bannerImageView.image = image;
-                }];
-            }
-        }
+        ApolloSubredditApplyIconForHeader(header, subredditName, info);
+        ApolloSubredditApplyBannerForHeader(header, subredditName, info);
     };
 
     if (cachedInfo) applyInfo(cachedInfo);
+    else {
+        ApolloSubredditApplyBannerForHeader(header, subredditName, nil);
+        ApolloSubredditApplyIconForHeader(header, subredditName, nil);
+    }
+
     if (forceRefresh) {
         [cache refetchInfoForSubreddit:subredditName completion:applyInfo];
     } else {
@@ -468,6 +811,8 @@ static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL
         header.heightInvalidationBlock = nil;
     }
 
+    ApolloSubredditDismissHeaderPickersForViewController(viewController);
+
     if (tableView && restoreNativeHeader && wrappedHeader && tableView.tableHeaderView == wrappedHeader) {
         objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         tableView.tableHeaderView = originalHeader;
@@ -517,8 +862,18 @@ static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController
 
 #pragma mark - Install / restore
 
+static void ApolloSubredditRefreshBannerInTree(UIViewController *viewController,
+                                               NSString *subredditName,
+                                               NSHashTable *visited);
+static void ApolloSubredditRefreshIconInTree(UIViewController *viewController,
+                                             NSString *subredditName,
+                                             NSHashTable *visited);
+
 static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewController) {
     if (!viewController) return;
+    if ([objc_getAssociatedObject(viewController, kApolloSubredditInstallInProgressKey) boolValue]) return;
+    objc_setAssociatedObject(viewController, kApolloSubredditInstallInProgressKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    @try {
     if (ApolloSubredditShouldSkipViewController(viewController)) return;
     // Only install on Apollo's PostsViewController. The notification-refresh
     // walker previously trampled across RedditListVC / InboxListVC /
@@ -651,13 +1006,94 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
     ApolloSubredditSyncAssociations(tableView, viewController, header, wrappedHeader, originalHeader);
 
     NSString *storedSubredditName = objc_getAssociatedObject(viewController, kApolloSubredditNameKey);
-    if (![storedSubredditName isEqualToString:subredditName]) {
+    BOOL subredditChanged = ![storedSubredditName isEqualToString:subredditName];
+    if (subredditChanged) {
         objc_setAssociatedObject(viewController, kApolloSubredditNameKey, subredditName, OBJC_ASSOCIATION_COPY_NONATOMIC);
         header.iconImageView.image = ApolloSubredditPlaceholderIcon();
+        header.usesCustomIcon = NO;
         header.bannerImageView.image = nil;
+        header.bannerImageView.backgroundColor = [UIColor clearColor];
+        header.usesCustomBanner = NO;
         [header applyInfo:nil fallbackSubredditName:subredditName];
         ApolloSubredditLoadImages(header, subredditName, NO);
     }
+
+    if (wrappedHeader && header) {
+        CGRect frameBeforeMetadata = wrappedHeader.frame;
+        ApolloSubredditLayoutWrappedHeader(wrappedHeader, header, originalHeader, width);
+        if (!CGRectEqualToRect(frameBeforeMetadata, wrappedHeader.frame)) {
+            objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            tableView.tableHeaderView = wrappedHeader;
+            objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+    } @finally {
+        objc_setAssociatedObject(viewController, kApolloSubredditInstallInProgressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static void ApolloSubredditRefreshBannerInTree(UIViewController *viewController,
+                                               NSString *subredditName,
+                                               NSHashTable *visited) {
+    if (!viewController || subredditName.length == 0 || [visited containsObject:viewController]) return;
+    [visited addObject:viewController];
+
+    if ([ApolloSubredditNameFromViewController(viewController) isEqualToString:subredditName]) {
+        ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
+        if (header) {
+            ApolloSubredditInfo *info = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subredditName];
+            ApolloSubredditApplyBannerForHeader(header, subredditName, info);
+        }
+    }
+
+    for (UIViewController *child in viewController.childViewControllers) {
+        ApolloSubredditRefreshBannerInTree(child, subredditName, visited);
+    }
+    if (viewController.presentedViewController) {
+        ApolloSubredditRefreshBannerInTree(viewController.presentedViewController, subredditName, visited);
+    }
+}
+
+static void ApolloSubredditRefreshBannerForSubreddit(NSString *subredditName) {
+    if (subredditName.length == 0) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSHashTable *visited = [[NSHashTable alloc] initWithOptions:NSHashTableObjectPointerPersonality capacity:16];
+        for (UIWindow *window in UIApplication.sharedApplication.windows) {
+            ApolloSubredditRefreshBannerInTree(window.rootViewController, subredditName, visited);
+        }
+    });
+}
+
+static void ApolloSubredditRefreshIconInTree(UIViewController *viewController,
+                                             NSString *subredditName,
+                                             NSHashTable *visited) {
+    if (!viewController || subredditName.length == 0 || [visited containsObject:viewController]) return;
+    [visited addObject:viewController];
+
+    if ([ApolloSubredditNameFromViewController(viewController) isEqualToString:subredditName]) {
+        ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
+        if (header) {
+            ApolloSubredditInfo *info = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subredditName];
+            ApolloSubredditApplyIconForHeader(header, subredditName, info);
+        }
+    }
+
+    for (UIViewController *child in viewController.childViewControllers) {
+        ApolloSubredditRefreshIconInTree(child, subredditName, visited);
+    }
+    if (viewController.presentedViewController) {
+        ApolloSubredditRefreshIconInTree(viewController.presentedViewController, subredditName, visited);
+    }
+}
+
+static void ApolloSubredditRefreshIconForSubreddit(NSString *subredditName) {
+    if (subredditName.length == 0) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSHashTable *visited = [[NSHashTable alloc] initWithOptions:NSHashTableObjectPointerPersonality capacity:16];
+        for (UIWindow *window in UIApplication.sharedApplication.windows) {
+            ApolloSubredditRefreshIconInTree(window.rootViewController, subredditName, visited);
+        }
+    });
 }
 
 static void ApolloSubredditRefreshViewControllersInTree(UIViewController *viewController, NSHashTable *visited) {
@@ -843,6 +1279,30 @@ static BOOL ApolloSubredditShouldBlockOffset(UITableView *tableView, CGPoint new
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
+        ApolloSubredditRefreshVisibleControllers();
+    }];
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloSubredditCustomBannerChangedNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        NSString *subredditName = note.userInfo[ApolloSubredditCustomBannerSubredditNameKey];
+        if (subredditName.length > 0) {
+            ApolloSubredditRefreshBannerForSubreddit(subredditName);
+            return;
+        }
+        ApolloSubredditRefreshVisibleControllers();
+    }];
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloSubredditCustomIconChangedNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        NSString *subredditName = note.userInfo[ApolloSubredditCustomIconSubredditNameKey];
+        if (subredditName.length > 0) {
+            ApolloSubredditRefreshIconForSubreddit(subredditName);
+            return;
+        }
         ApolloSubredditRefreshVisibleControllers();
     }];
 }
