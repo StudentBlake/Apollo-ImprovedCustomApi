@@ -589,7 +589,7 @@ static UIImage *ApolloSubredditPlaceholderIcon(void) {
     return ApolloSubredditPlaceholderIconForUserInterfaceStyle(style);
 }
 
-static UIImage *ApolloSubredditPlaceholderBanner(void) {
+static UIImage *ApolloSubredditDefaultBanner(void) {
     static UIImage *cached = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -601,10 +601,37 @@ static UIImage *ApolloSubredditPlaceholderBanner(void) {
     return cached;
 }
 
-static void ApolloSubredditApplyPlaceholderBanner(ApolloSubredditHeaderView *header) {
+static UIColor *ApolloSubredditBannerBackgroundColorForUserInterfaceStyle(UIUserInterfaceStyle style) {
+    UIUserInterfaceStyle resolved = style;
+    if (resolved == UIUserInterfaceStyleUnspecified) {
+        resolved = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
+    }
+    if (@available(iOS 13.0, *)) {
+        if (resolved == UIUserInterfaceStyleDark) {
+            return [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
+        }
+        return [UIColor colorWithRed:218.0 / 255.0 green:219.0 / 255.0 blue:220.0 / 255.0 alpha:1.0];
+    }
+    return [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
+}
+
+static UIColor *ApolloSubredditBannerBackgroundColor(void) {
+    UIUserInterfaceStyle style = UIUserInterfaceStyleUnspecified;
+    if (@available(iOS 13.0, *)) {
+        style = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
+    }
+    return ApolloSubredditBannerBackgroundColorForUserInterfaceStyle(style);
+}
+
+static void ApolloSubredditApplyLoadingBanner(ApolloSubredditHeaderView *header) {
     if (!header) return;
-    UIImage *placeholder = ApolloSubredditPlaceholderBanner();
-    header.bannerImageView.image = placeholder;
+    header.bannerImageView.image = nil;
+    header.bannerImageView.backgroundColor = ApolloSubredditBannerBackgroundColor();
+}
+
+static void ApolloSubredditApplyDefaultBanner(ApolloSubredditHeaderView *header) {
+    if (!header) return;
+    header.bannerImageView.image = ApolloSubredditDefaultBanner();
     header.bannerImageView.backgroundColor = [UIColor clearColor];
 }
 
@@ -646,6 +673,8 @@ static void ApolloSubredditApplyBannerForHeader(ApolloSubredditHeaderView *heade
             return;
         }
 
+        ApolloSubredditApplyLoadingBanner(header);
+
         __weak ApolloSubredditHeaderView *weakHeader = header;
         NSURL *bannerURL = info.bannerURL;
         [imageCache requestImageForURL:bannerURL completion:^(UIImage *image) {
@@ -656,13 +685,17 @@ static void ApolloSubredditApplyBannerForHeader(ApolloSubredditHeaderView *heade
                 strongHeader.bannerImageView.image = image;
                 strongHeader.bannerImageView.backgroundColor = [UIColor clearColor];
             } else {
-                ApolloSubredditApplyPlaceholderBanner(strongHeader);
+                ApolloSubredditApplyDefaultBanner(strongHeader);
             }
         }];
         return;
     }
 
-    ApolloSubredditApplyPlaceholderBanner(header);
+    if (info) {
+        ApolloSubredditApplyDefaultBanner(header);
+    } else {
+        ApolloSubredditApplyLoadingBanner(header);
+    }
 }
 
 static void ApolloSubredditApplyIconForHeader(ApolloSubredditHeaderView *header, NSString *subredditName, ApolloSubredditInfo *info) {
@@ -709,6 +742,7 @@ static void ApolloSubredditApplyIconForHeader(ApolloSubredditHeaderView *header,
 static ApolloSubredditHeaderView *ApolloSubredditCreateHeader(CGFloat width) {
     ApolloSubredditHeaderView *header = [[ApolloSubredditHeaderView alloc] initWithFrame:CGRectMake(0.0, 0.0, width, 210.0)];
     header.iconImageView.image = ApolloSubredditPlaceholderIcon();
+    ApolloSubredditApplyLoadingBanner(header);
     return header;
 }
 
@@ -1011,9 +1045,8 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
         objc_setAssociatedObject(viewController, kApolloSubredditNameKey, subredditName, OBJC_ASSOCIATION_COPY_NONATOMIC);
         header.iconImageView.image = ApolloSubredditPlaceholderIcon();
         header.usesCustomIcon = NO;
-        header.bannerImageView.image = nil;
-        header.bannerImageView.backgroundColor = [UIColor clearColor];
         header.usesCustomBanner = NO;
+        ApolloSubredditApplyLoadingBanner(header);
         [header applyInfo:nil fallbackSubredditName:subredditName];
         ApolloSubredditLoadImages(header, subredditName, NO);
     }
