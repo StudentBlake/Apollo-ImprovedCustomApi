@@ -25,6 +25,7 @@ ApolloImprovedCustomApi_FILES = \
     $(SRC_DIR)/ApolloRedditMediaUpload.m \
     $(SRC_DIR)/ApolloNotificationBackend.m \
     $(SRC_DIR)/ApolloUserProfileCache.m \
+    $(SRC_DIR)/ApolloSubredditInfoCache.m \
     $(SRC_DIR)/ApolloUserAvatars.xm \
     $(SRC_DIR)/ApolloImageUploadHost.xm \
     $(SRC_DIR)/ApolloPhotoPostComposerScrollFix.xm \

@@ -3,6 +3,7 @@
 #import "ApolloCommon.h"
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloState.h"
+#import "ApolloSubredditInfoCache.h"
 #import "ApolloUserProfileCache.h"
 
 static const NSUInteger ApolloLinkPreviewMaxHTMLBytes = 2 * 1024 * 1024;
@@ -208,6 +209,31 @@ static NSString *ApolloRedditUsernameFromProfileURL(NSURL *url) {
     [allowed addCharactersInString:@"_-"];
     if ([username rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return nil;
     return username;
+}
+
+static NSString *ApolloRedditSubredditFromURL(NSURL *url) {
+    NSString *host = url.host.lowercaseString ?: @"";
+    if ([host hasPrefix:@"www."]) host = [host substringFromIndex:4];
+    if (![host isEqualToString:@"reddit.com"] && ![host hasSuffix:@".reddit.com"]) return nil;
+
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (NSString *part in [url.path componentsSeparatedByString:@"/"]) {
+        if (part.length > 0) [parts addObject:part];
+    }
+    if (parts.count < 2) return nil;
+
+    NSString *kind = parts[0].lowercaseString;
+    if (![kind isEqualToString:@"r"]) return nil;
+    for (NSString *part in parts) {
+        if ([part.lowercaseString isEqualToString:@"comments"]) return nil;
+    }
+
+    NSString *subreddit = [parts[1] stringByRemovingPercentEncoding] ?: parts[1];
+    if (subreddit.length == 0) return nil;
+    NSMutableCharacterSet *allowed = [[NSCharacterSet alphanumericCharacterSet] mutableCopy];
+    [allowed addCharactersInString:@"_-"];
+    if ([subreddit rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return nil;
+    return subreddit;
 }
 
 // Sniffs the supplied HTML for the giveaway signatures of an anti-bot
@@ -655,12 +681,14 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             && (![cached.previewKind isEqualToString:@"bluesky-post-v2"] || cached.postText.length == 0);
         BOOL staleRedditUser = ApolloRedditUsernameFromProfileURL(url).length > 0
             && ![cached.previewKind isEqualToString:@"reddit-user-profile"];
-        if (!botWall && !weakAcademic && !weakGeneric && !staleBluesky && !staleRedditUser) {
+        BOOL staleRedditSubreddit = ApolloRedditSubredditFromURL(url).length > 0
+            && ![cached.previewKind isEqualToString:@"reddit-subreddit"];
+        if (!botWall && !weakAcademic && !weakGeneric && !staleBluesky && !staleRedditUser && !staleRedditSubreddit) {
             if (completion) completion(cached);
             return;
         }
         ApolloLog(@"[LinkPreviews] refetching cached preview host=%@ reason=%@",
-                  logHost, botWall ? @"bot-wall" : (weakAcademic ? @"weak-academic" : (weakGeneric ? @"weak-generic" : (staleBluesky ? @"stale-bluesky" : @"stale-reddit-user"))));
+                  logHost, botWall ? @"bot-wall" : (weakAcademic ? @"weak-academic" : (weakGeneric ? @"weak-generic" : (staleBluesky ? @"stale-bluesky" : (staleRedditUser ? @"stale-reddit-user" : @"stale-reddit-subreddit")))));
     }
 
     NSString *key = url.absoluteString ?: @"";
@@ -896,10 +924,58 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
     }];
 }
 
++ (void)fetchRedditSubredditPreviewForURL:(NSURL *)url subreddit:(NSString *)subreddit completion:(ApolloLinkPreviewCompletion)completion {
+    ApolloSubredditInfoCache *subredditCache = [ApolloSubredditInfoCache sharedCache];
+    ApolloSubredditInfo *cachedInfo = [subredditCache cachedInfoForSubreddit:subreddit];
+    void (^deliver)(ApolloSubredditInfo *) = ^(ApolloSubredditInfo *info) {
+        ApolloLinkPreview *preview = [ApolloLinkPreview new];
+        preview.siteName = @"Reddit";
+        preview.previewKind = @"reddit-subreddit";
+        NSString *canonicalSubreddit = info.subredditName.length > 0 ? info.subredditName : subreddit;
+        NSString *fallbackHandle = [@"r/" stringByAppendingString:(subreddit ?: @"")];
+        preview.authorHandle = canonicalSubreddit.length > 0 ? [@"r/" stringByAppendingString:canonicalSubreddit] : fallbackHandle;
+        preview.authorDisplayName = ApolloLinkPreviewCleanString(info.displayName);
+        preview.title = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : preview.authorHandle;
+        preview.desc = ApolloLinkPreviewTruncatedString(info.aboutText, 160);
+        preview.postText = ApolloSubredditFormattedMemberCount(info.subscriberCount);
+        preview.avatarURL = info.iconURL;
+        preview.imageURL = preview.avatarURL;
+        if (preview.imageURL.absoluteString.length > 0) {
+            preview.imageSize = CGSizeMake(128.0, 128.0);
+        } else {
+            ApolloLinkPreviewApplyFallbackIcon(preview, url);
+        }
+        preview.fetchedAt = [NSDate date];
+        ApolloLog(@"[LinkPreviews] Reddit subreddit preview fetched handle=%@ avatar=%@ members=%@",
+                  preview.authorHandle ?: fallbackHandle,
+                  preview.avatarURL.absoluteString.length > 0 ? @"YES" : @"NO",
+                  preview.postText.length > 0 ? preview.postText : @"NO");
+        completion(preview);
+    };
+
+    if (cachedInfo) {
+        deliver(cachedInfo);
+        return;
+    }
+
+    __block BOOL didDeliver = NO;
+    [subredditCache requestInfoForSubreddit:subreddit completion:^(ApolloSubredditInfo *info) {
+        if (didDeliver) return;
+        didDeliver = YES;
+        deliver(info);
+    }];
+}
+
 + (void)fetchRedditPreviewForURL:(NSURL *)url completion:(ApolloLinkPreviewCompletion)completion {
     NSString *username = ApolloRedditUsernameFromProfileURL(url);
     if (username.length > 0) {
         [self fetchRedditUserPreviewForURL:url username:username completion:completion];
+        return;
+    }
+
+    NSString *subreddit = ApolloRedditSubredditFromURL(url);
+    if (subreddit.length > 0) {
+        [self fetchRedditSubredditPreviewForURL:url subreddit:subreddit completion:completion];
         return;
     }
 

@@ -8,6 +8,7 @@
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloLinkPreviewFetcher.h"
 #import "ApolloState.h"
+#import "ApolloSubredditInfoCache.h"
 #import "ApolloTranslation.h"
 #import "ApolloUserProfileCache.h"
 #import "UserDefaultConstants.h"
@@ -133,6 +134,8 @@ static void ApolloLPLogOncePerHost(NSString *host, NSString *event);
 static void ApolloLPTriggerRelayoutForHost(ASDisplayNode *node, NSString *host);
 static BOOL ApolloLPIsRedditUserProfileURL(NSURL *url);
 static NSString *ApolloLPRedditUsernameFromProfileURL(NSURL *url);
+static BOOL ApolloLPIsRedditSubredditURL(NSURL *url);
+static NSString *ApolloLPRedditSubredditFromURL(NSURL *url);
 static NSString *ApolloLPCleanDisplayText(NSString *text);
 
 static Class ApolloLPClass(NSString *name) {
@@ -250,6 +253,14 @@ static NSString *ApolloLPNormalizedRedditUsername(NSString *username) {
     NSString *clean = [username stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if ([clean.lowercaseString hasPrefix:@"u/"]) clean = [clean substringFromIndex:2];
     return clean.length > 0 ? clean : nil;
+}
+
+static NSString *ApolloLPNormalizedRedditSubreddit(NSString *subreddit) {
+    if (![subreddit isKindOfClass:[NSString class]]) return nil;
+    NSString *clean = [subreddit stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([clean.lowercaseString hasPrefix:@"r/"]) clean = [clean substringFromIndex:2];
+    if ([clean.lowercaseString hasPrefix:@"/r/"]) clean = [clean substringFromIndex:3];
+    return clean.length > 0 ? clean.lowercaseString : nil;
 }
 
 @interface ApolloLPRedditUserPreviewViewController : UIViewController
@@ -435,6 +446,198 @@ static NSString *ApolloLPNormalizedRedditUsername(NSString *username) {
 
 @end
 
+@interface ApolloLPRedditSubredditPreviewViewController : UIViewController
+- (instancetype)initWithURL:(NSURL *)url preview:(ApolloLinkPreview *)preview;
+@end
+
+@interface ApolloLPRedditSubredditPreviewViewController ()
+@property(nonatomic, strong) NSURL *url;
+@property(nonatomic, strong) ApolloLinkPreview *preview;
+@property(nonatomic, copy) NSString *subredditName;
+@property(nonatomic, strong) UIImageView *avatarView;
+@property(nonatomic, strong) UILabel *titleLabel;
+@property(nonatomic, strong) UILabel *handleLabel;
+@property(nonatomic, strong) UILabel *memberLabel;
+@property(nonatomic, strong) UILabel *bioLabel;
+@end
+
+@implementation ApolloLPRedditSubredditPreviewViewController
+
+- (instancetype)initWithURL:(NSURL *)url preview:(ApolloLinkPreview *)preview {
+    self = [super initWithNibName:nil bundle:nil];
+    if (self) {
+        _url = url;
+        _preview = preview;
+        _subredditName = ApolloLPNormalizedRedditSubreddit(ApolloLPRedditSubredditFromURL(url))
+            ?: ApolloLPNormalizedRedditSubreddit(preview.authorHandle);
+        self.preferredContentSize = CGSizeMake(360.0, 250.0);
+    }
+    return self;
+}
+
+- (void)loadView {
+    UIView *root = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 360.0, 250.0)];
+    root.backgroundColor = [UIColor systemBackgroundColor];
+
+    UILabel *eyebrow = [UILabel new];
+    eyebrow.translatesAutoresizingMaskIntoConstraints = NO;
+    eyebrow.text = @"REDDIT COMMUNITY";
+    eyebrow.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    eyebrow.textColor = [UIColor secondaryLabelColor];
+
+    UIImageView *avatarView = [UIImageView new];
+    avatarView.translatesAutoresizingMaskIntoConstraints = NO;
+    avatarView.backgroundColor = [UIColor tertiarySystemFillColor];
+    avatarView.contentMode = UIViewContentModeScaleAspectFill;
+    avatarView.clipsToBounds = YES;
+    avatarView.layer.cornerRadius = 32.0;
+    avatarView.image = [UIImage systemImageNamed:@"person.2.fill"];
+    avatarView.tintColor = [UIColor secondaryLabelColor];
+
+    UILabel *titleLabel = [UILabel new];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.font = [UIFont systemFontOfSize:22.0 weight:UIFontWeightBold];
+    titleLabel.textColor = [UIColor labelColor];
+    titleLabel.numberOfLines = 1;
+
+    UILabel *handleLabel = [UILabel new];
+    handleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    handleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
+    handleLabel.textColor = [UIColor secondaryLabelColor];
+    handleLabel.numberOfLines = 1;
+
+    UILabel *memberLabel = [UILabel new];
+    memberLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    memberLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightRegular];
+    memberLabel.textColor = [UIColor secondaryLabelColor];
+    memberLabel.numberOfLines = 1;
+
+    UILabel *bioLabel = [UILabel new];
+    bioLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    bioLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular];
+    bioLabel.textColor = [UIColor secondaryLabelColor];
+    bioLabel.numberOfLines = 4;
+
+    UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, handleLabel, memberLabel, bioLabel]];
+    textStack.translatesAutoresizingMaskIntoConstraints = NO;
+    textStack.axis = UILayoutConstraintAxisVertical;
+    textStack.spacing = 4.0;
+    textStack.alignment = UIStackViewAlignmentFill;
+
+    UIStackView *headerStack = [[UIStackView alloc] initWithArrangedSubviews:@[avatarView, textStack]];
+    headerStack.translatesAutoresizingMaskIntoConstraints = NO;
+    headerStack.axis = UILayoutConstraintAxisHorizontal;
+    headerStack.spacing = 14.0;
+    headerStack.alignment = UIStackViewAlignmentCenter;
+
+    UIView *card = [UIView new];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    card.layer.cornerRadius = 18.0;
+    card.clipsToBounds = YES;
+
+    [root addSubview:card];
+    [card addSubview:eyebrow];
+    [card addSubview:headerStack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16.0],
+        [card.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-16.0],
+        [card.topAnchor constraintEqualToAnchor:root.topAnchor constant:16.0],
+        [card.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-16.0],
+        [eyebrow.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18.0],
+        [eyebrow.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18.0],
+        [eyebrow.topAnchor constraintEqualToAnchor:card.topAnchor constant:18.0],
+        [headerStack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18.0],
+        [headerStack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18.0],
+        [headerStack.topAnchor constraintEqualToAnchor:eyebrow.bottomAnchor constant:14.0],
+        [headerStack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-18.0],
+        [avatarView.widthAnchor constraintEqualToConstant:64.0],
+        [avatarView.heightAnchor constraintEqualToConstant:64.0],
+    ]];
+
+    self.avatarView = avatarView;
+    self.titleLabel = titleLabel;
+    self.handleLabel = handleLabel;
+    self.memberLabel = memberLabel;
+    self.bioLabel = bioLabel;
+    self.view = root;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [self applyPreviewInfo:self.preview];
+    [self loadSubredditInfo];
+}
+
+- (void)applyPreviewInfo:(ApolloLinkPreview *)preview {
+    NSString *displayName = ApolloLPCleanDisplayText(preview.authorDisplayName.length > 0 ? preview.authorDisplayName : preview.title);
+    NSString *handle = preview.authorHandle.length > 0 ? preview.authorHandle : (self.subredditName.length > 0 ? [@"r/" stringByAppendingString:self.subredditName] : @"Reddit community");
+    NSString *bio = ApolloLPCleanDisplayText(preview.desc);
+    NSString *members = ApolloLPCleanDisplayText(preview.postText);
+
+    self.titleLabel.text = displayName.length > 0 ? displayName : (self.subredditName.length > 0 ? self.subredditName : @"Reddit Community");
+    self.handleLabel.text = [handle hasPrefix:@"r/"] ? handle : [@"r/" stringByAppendingString:handle];
+    self.memberLabel.text = members.length > 0 ? members : @"";
+    self.memberLabel.hidden = members.length == 0;
+    self.bioLabel.text = bio.length > 0 ? bio : @"Open this community in Apollo to browse posts.";
+
+    NSURL *avatarURL = preview.avatarURL ?: preview.imageURL;
+    [self loadImageURL:avatarURL intoImageView:self.avatarView];
+}
+
+- (void)loadSubredditInfo {
+    if (self.subredditName.length == 0) return;
+
+    ApolloSubredditInfoCache *cache = [ApolloSubredditInfoCache sharedCache];
+    ApolloSubredditInfo *cachedInfo = [cache cachedInfoForSubreddit:self.subredditName];
+    if (cachedInfo) [self applySubredditInfo:cachedInfo];
+
+    __weak typeof(self) weakSelf = self;
+    [cache requestInfoForSubreddit:self.subredditName completion:^(ApolloSubredditInfo *info) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloLPRedditSubredditPreviewViewController *strongSelf = weakSelf;
+            if (!strongSelf || !info) return;
+            [strongSelf applySubredditInfo:info];
+        });
+    }];
+}
+
+- (void)applySubredditInfo:(ApolloSubredditInfo *)info {
+    NSString *displayName = ApolloLPCleanDisplayText(info.displayName);
+    NSString *bio = ApolloLPCleanDisplayText(info.aboutText);
+    NSString *subredditName = ApolloLPNormalizedRedditSubreddit(info.subredditName) ?: self.subredditName;
+    NSString *members = ApolloSubredditFormattedMemberCount(info.subscriberCount);
+
+    self.titleLabel.text = displayName.length > 0 ? displayName : (subredditName.length > 0 ? subredditName : self.titleLabel.text);
+    self.handleLabel.text = subredditName.length > 0 ? [@"r/" stringByAppendingString:subredditName] : self.handleLabel.text;
+    self.memberLabel.text = members.length > 0 ? members : @"";
+    self.memberLabel.hidden = members.length == 0;
+    if (bio.length > 0) self.bioLabel.text = bio;
+
+    [self loadImageURL:info.iconURL intoImageView:self.avatarView];
+}
+
+- (void)loadImageURL:(NSURL *)url intoImageView:(UIImageView *)imageView {
+    if (!url || !imageView) return;
+
+    ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
+    UIImage *cachedImage = [cache cachedImageForURL:url];
+    if (cachedImage) {
+        imageView.image = cachedImage;
+        return;
+    }
+
+    [cache requestImageForURL:url completion:^(UIImage *image) {
+        if (!image) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            imageView.image = image;
+        });
+    }];
+}
+
+@end
+
 @interface ApolloLinkPreviewInteractionDelegate : NSObject <UIContextMenuInteractionDelegate>
 + (instancetype)sharedDelegate;
 @end
@@ -460,6 +663,10 @@ static NSString *ApolloLPNormalizedRedditUsername(NSString *username) {
         if (ApolloLPIsRedditUserProfileURL(url)) {
             ApolloLinkPreview *preview = [[ApolloLinkPreviewCache sharedCache] cachedPreviewForURL:url];
             return [[ApolloLPRedditUserPreviewViewController alloc] initWithURL:url preview:preview];
+        }
+        if (ApolloLPIsRedditSubredditURL(url)) {
+            ApolloLinkPreview *preview = [[ApolloLinkPreviewCache sharedCache] cachedPreviewForURL:url];
+            return [[ApolloLPRedditSubredditPreviewViewController alloc] initWithURL:url preview:preview];
         }
         return [[SFSafariViewController alloc] initWithURL:url];
     } actionProvider:^UIMenu *(__unused NSArray<UIMenuElement *> *suggestedActions) {
@@ -1124,6 +1331,29 @@ static BOOL ApolloLPIsRedditUserProfileURL(NSURL *url) {
     return ApolloLPRedditUsernameFromProfileURL(url).length > 0;
 }
 
+static NSString *ApolloLPRedditSubredditFromURL(NSURL *url) {
+    if (!ApolloLPHostHasSuffix(url, @"reddit.com")) return nil;
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (NSString *part in [url.path componentsSeparatedByString:@"/"]) {
+        if (part.length > 0) [parts addObject:part];
+    }
+    if (parts.count < 2) return nil;
+
+    NSString *prefix = parts[0].lowercaseString;
+    if (![prefix isEqualToString:@"r"]) return nil;
+    for (NSString *part in parts) {
+        if ([part.lowercaseString isEqualToString:@"comments"]) return nil;
+    }
+
+    NSString *subreddit = [parts[1] stringByRemovingPercentEncoding] ?: parts[1];
+    subreddit = [subreddit stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return subreddit.length > 0 ? subreddit : nil;
+}
+
+static BOOL ApolloLPIsRedditSubredditURL(NSURL *url) {
+    return ApolloLPRedditSubredditFromURL(url).length > 0;
+}
+
 static NSString *ApolloLPRedditUsernameFromProfileURL(NSURL *url) {
     if (!ApolloLPHostHasSuffix(url, @"reddit.com")) return nil;
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
@@ -1560,6 +1790,83 @@ static id ApolloLPBuildRedditUserCardSpec(ASDisplayNode *hostNode, NSURL *url, A
     if (!stackClass || !insetClass) return nil;
 
     NSString *handleText = ApolloLPRedditUserHandleText(preview);
+    NSString *displayName = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : (preview.title.length > 0 ? preview.title : handleText);
+    NSString *aboutText = preview.desc.length > 0 ? preview.desc : handleText;
+    NSURL *avatarURL = preview.avatarURL ?: preview.imageURL;
+
+    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
+    backgroundNode.cornerRadius = 10.0;
+    backgroundNode.clipsToBounds = YES;
+
+    ApolloLPSetNetworkImageURLPreservingImage(avatarNode, avatarURL);
+    ApolloLPSetImageNodeBackgroundForURL(avatarNode, avatarURL);
+    ApolloLPScheduleImageFallbackIfNeeded(avatarNode, avatarURL, ApolloLPHost(url));
+    avatarNode.contentMode = UIViewContentModeScaleAspectFill;
+    avatarNode.cornerRadius = 22.0;
+    avatarNode.clipsToBounds = YES;
+    ApolloLPApplyStyleSize([avatarNode style], CGSizeMake(44.0, 44.0));
+
+    siteNode.maximumNumberOfLines = 1;
+    titleNode.maximumNumberOfLines = 1;
+    descriptionNode.maximumNumberOfLines = 2;
+    ApolloLPSetTextNodeAttributedTextIfChanged(siteNode, ApolloLPAttributedString(handleText, [UIFont systemFontOfSize:12.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(titleNode, ApolloLPAttributedString(displayName, [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(descriptionNode, ApolloLPAttributedString(aboutText, [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]));
+
+    NSMutableArray *textChildren = [NSMutableArray array];
+    if (titleNode.attributedText.length > 0) [textChildren addObject:titleNode];
+    if (siteNode.attributedText.length > 0) [textChildren addObject:siteNode];
+    if (descriptionNode.attributedText.length > 0 && ![aboutText isEqualToString:handleText]) [textChildren addObject:descriptionNode];
+    if (textChildren.count == 0) return nil;
+
+    ASStackLayoutSpec *textStack = [stackClass stackLayoutSpecWithDirection:ApolloLinkPreviewStackDirectionVertical
+                                                                    spacing:2.0
+                                                             justifyContent:ApolloLinkPreviewStackJustifyContentStart
+                                                                 alignItems:ApolloLinkPreviewStackAlignItemsStretch
+                                                                   children:textChildren];
+    [[textStack style] setValue:@1.0 forKey:@"flexShrink"];
+
+    ASStackLayoutSpec *row = [stackClass stackLayoutSpecWithDirection:ApolloLinkPreviewStackDirectionHorizontal
+                                                              spacing:10.0
+                                                       justifyContent:ApolloLinkPreviewStackJustifyContentStart
+                                                           alignItems:ApolloLinkPreviewStackAlignItemsCenter
+                                                             children:@[avatarNode, textStack]];
+    ASInsetLayoutSpec *contentInset = [insetClass insetLayoutSpecWithInsets:UIEdgeInsetsMake(10.0, 10.0, 10.0, 10.0) child:row];
+    id card = ApolloLPBackgroundWrappedSpec(contentInset, backgroundNode, backgroundClass);
+    return ApolloLPMeasuredWrapper(card, insetClass);
+}
+
+static BOOL ApolloLPIsRedditSubredditPreview(NSURL *url, ApolloLinkPreview *preview) {
+    return ApolloLPIsRedditSubredditURL(url)
+        && [preview.previewKind isEqualToString:@"reddit-subreddit"]
+        && (preview.title.length > 0 || preview.authorHandle.length > 0);
+}
+
+static NSString *ApolloLPRedditSubredditHandleText(ApolloLinkPreview *preview) {
+    NSString *handle = preview.authorHandle.length > 0 ? preview.authorHandle : preview.title;
+    if (handle.length == 0) return @"Reddit community";
+    NSString *normalized = [handle hasPrefix:@"r/"] ? handle : [@"r/" stringByAppendingString:handle];
+    NSString *members = ApolloLPCleanDisplayText(preview.postText);
+    if (members.length == 0) return normalized;
+    return [NSString stringWithFormat:@"%@ · %@", normalized, members];
+}
+
+static id ApolloLPBuildRedditSubredditCardSpec(ASDisplayNode *hostNode, NSURL *url, ApolloLinkPreview *preview, NSString *variant) {
+    NSDictionary *bundle = ApolloLPPreparedNodeBundle(hostNode, url, preview, variant);
+    if (!bundle) return nil;
+
+    ASNetworkImageNode *avatarNode = bundle[@"avatar"];
+    ASTextNode *siteNode = bundle[@"site"];
+    ASTextNode *titleNode = bundle[@"title"];
+    ASTextNode *descriptionNode = bundle[@"description"];
+    ASDisplayNode *backgroundNode = bundle[@"background"];
+
+    Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
+    Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
+    Class backgroundClass = ApolloLPClass(@"ASBackgroundLayoutSpec");
+    if (!stackClass || !insetClass) return nil;
+
+    NSString *handleText = ApolloLPRedditSubredditHandleText(preview);
     NSString *displayName = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : (preview.title.length > 0 ? preview.title : handleText);
     NSString *aboutText = preview.desc.length > 0 ? preview.desc : handleText;
     NSURL *avatarURL = preview.avatarURL ?: preview.imageURL;
@@ -2490,7 +2797,7 @@ static ApolloLinkPreview *ApolloLPPreviewByApplyingTranslation(ASDisplayNode *ho
         cached = nil;
     }
     if (!cached) {
-        BOOL compactPlaceholder = selectedMode == ApolloLinkPreviewModeCompact || ApolloLPShouldUseCompactPlaceholder(url) || ApolloLPIsRedditUserProfileURL(url);
+        BOOL compactPlaceholder = selectedMode == ApolloLinkPreviewModeCompact || ApolloLPShouldUseCompactPlaceholder(url) || ApolloLPIsRedditUserProfileURL(url) || ApolloLPIsRedditSubredditURL(url);
         ApolloLPContext placeholderContext = compactPlaceholder ? ApolloLPContextCompact : ApolloLPContextSelfText;
         NSNumber *inFlight = objc_getAssociatedObject(self, &kApolloLinkPreviewFetchInFlightKey);
         if (![inFlight boolValue]) {
@@ -2543,14 +2850,15 @@ static ApolloLinkPreview *ApolloLPPreviewByApplyingTranslation(ASDisplayNode *ho
     }
 
     BOOL isRedditUser = ApolloLPIsRedditUserPreview(url, cached);
-    ApolloLinkPreview *displayPreview = isRedditUser ? cached : ApolloLPPreviewByApplyingTranslation((ASDisplayNode *)self, url, cached);
+    BOOL isRedditSubreddit = ApolloLPIsRedditSubredditPreview(url, cached);
+    ApolloLinkPreview *displayPreview = (isRedditUser || isRedditSubreddit) ? cached : ApolloLPPreviewByApplyingTranslation((ASDisplayNode *)self, url, cached);
     BOOL isBlueskyPost = ApolloLPIsBlueskyPostPreview(url, displayPreview);
-    ApolloLPContext context = isBlueskyPost ? ApolloLPContextSelfText : (isRedditUser ? ApolloLPContextCompact : ApolloLPContextForMode(selectedMode, displayPreview));
+    ApolloLPContext context = isBlueskyPost ? ApolloLPContextSelfText : ((isRedditUser || isRedditSubreddit) ? ApolloLPContextCompact : ApolloLPContextForMode(selectedMode, displayPreview));
     ApolloLPLogMetadataOnce(host, displayPreview, area, selectedMode, context);
-    if (!isBlueskyPost && !isRedditUser && displayPreview.imageIsFallbackIcon) {
+    if (!isBlueskyPost && !isRedditUser && !isRedditSubreddit && displayPreview.imageIsFallbackIcon) {
         ApolloLPRememberCompactPlaceholderHost(url);
         ApolloLPLogOncePerHost(host, @"fallback-icon-compact");
-    } else if (!isBlueskyPost && !isRedditUser && selectedMode == ApolloLinkPreviewModeFull && context == ApolloLPContextCompact) {
+    } else if (!isBlueskyPost && !isRedditUser && !isRedditSubreddit && selectedMode == ApolloLinkPreviewModeFull && context == ApolloLPContextCompact) {
         ApolloLPRememberCompactPlaceholderHost(url);
         ApolloLPLogOncePerHost(host, @"full-fallback-compact");
     }
@@ -2560,6 +2868,8 @@ static ApolloLinkPreview *ApolloLPPreviewByApplyingTranslation(ASDisplayNode *ho
         ? ApolloLPBuildBlueskyPostCardSpec((ASDisplayNode *)self, url, displayPreview, finalVariant)
         : isRedditUser
         ? ApolloLPBuildRedditUserCardSpec((ASDisplayNode *)self, url, displayPreview, finalVariant)
+        : isRedditSubreddit
+        ? ApolloLPBuildRedditSubredditCardSpec((ASDisplayNode *)self, url, displayPreview, finalVariant)
         : (context == ApolloLPContextSelfText)
         ? ApolloLPBuildHeroCardSpec((ASDisplayNode *)self, url, displayPreview, finalVariant)
         : ApolloLPBuildCompactCardSpec((ASDisplayNode *)self, url, displayPreview, finalVariant);
@@ -2584,8 +2894,8 @@ static ApolloLinkPreview *ApolloLPPreviewByApplyingTranslation(ASDisplayNode *ho
         }
         ApolloLPClearHostShell((ASDisplayNode *)self);
         ApolloLPLogOncePerHost(host, area == ApolloLPAreaComments ? @"area-comments" : @"area-body");
-        ApolloLPLogOncePerHost(host, isBlueskyPost ? @"mode-bluesky-post" : (isRedditUser ? @"mode-reddit-user" : (context == ApolloLPContextSelfText ? @"mode-full" : @"mode-compact")));
-        ApolloLPLogOncePerHost(host, isBlueskyPost ? @"render-bluesky-post" : (isRedditUser ? @"render-reddit-user" : (context == ApolloLPContextSelfText ? @"render-hero" : @"render-compact")));
+        ApolloLPLogOncePerHost(host, isBlueskyPost ? @"mode-bluesky-post" : (isRedditUser ? @"mode-reddit-user" : (isRedditSubreddit ? @"mode-reddit-subreddit" : (context == ApolloLPContextSelfText ? @"mode-full" : @"mode-compact"))));
+        ApolloLPLogOncePerHost(host, isBlueskyPost ? @"render-bluesky-post" : (isRedditUser ? @"render-reddit-user" : (isRedditSubreddit ? @"render-reddit-subreddit" : (context == ApolloLPContextSelfText ? @"render-hero" : @"render-compact"))));
         return richSpec;
     }
     ApolloLPLogOncePerHost(host, @"build-failed");
