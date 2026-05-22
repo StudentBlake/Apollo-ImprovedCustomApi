@@ -113,9 +113,8 @@ static UIColor *ApolloSubredditIndexThemeListBackgroundColor(UITableView *tableV
     UIViewController *viewController = ApolloSubredditIndexOwningViewController(tableView ?: fallbackView);
     NSMutableArray<UIColor *> *candidates = [NSMutableArray array];
 
-    // Headers are transparent, but UITableView reveals its own background in
-    // section gaps. Use the row surface first so the header area visually
-    // disappears instead of showing Apollo's tableBackgroundColor strip.
+    // Section headers stay transparent in modern mode; UITableView reveals its own
+    // background in section gaps unless the table surface matches row cells.
     for (UITableViewCell *cell in tableView.visibleCells) {
         if (cell.contentView.backgroundColor) [candidates addObject:cell.contentView.backgroundColor];
         if (cell.backgroundColor) [candidates addObject:cell.backgroundColor];
@@ -461,6 +460,56 @@ static void ApolloSubredditIndexClearHeaderBackgrounds(UIView *view, UILabel *la
     }
     for (UIView *subview in view.subviews) {
         ApolloSubredditIndexClearHeaderBackgrounds(subview, labelToKeep);
+    }
+}
+
+static Class ApolloSubredditIndexTableHeaderFooterViewClass(void) {
+    static Class cls = Nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cls = NSClassFromString(@"UITableViewHeaderFooterView");
+    });
+    return cls;
+}
+
+static void ApolloSubredditIndexClearHeaderChrome(UIView *header, UILabel *labelToKeep) {
+    if (!header) return;
+
+    ApolloSubredditIndexClearHeaderBackgrounds(header, labelToKeep);
+
+    Class headerFooterClass = ApolloSubredditIndexTableHeaderFooterViewClass();
+    if (headerFooterClass && [header isKindOfClass:headerFooterClass]) {
+        UITableViewHeaderFooterView *headerFooter = (UITableViewHeaderFooterView *)header;
+        if (!headerFooter.backgroundView) {
+            UIView *clearBackground = [[UIView alloc] initWithFrame:CGRectZero];
+            clearBackground.backgroundColor = [UIColor clearColor];
+            clearBackground.opaque = NO;
+            headerFooter.backgroundView = clearBackground;
+        } else {
+            headerFooter.backgroundView.backgroundColor = [UIColor clearColor];
+            headerFooter.backgroundView.layer.backgroundColor = UIColor.clearColor.CGColor;
+            headerFooter.backgroundView.opaque = NO;
+        }
+        headerFooter.contentView.backgroundColor = [UIColor clearColor];
+        headerFooter.contentView.layer.backgroundColor = UIColor.clearColor.CGColor;
+        headerFooter.contentView.opaque = NO;
+        ApolloSubredditIndexClearHeaderBackgrounds(headerFooter.contentView, labelToKeep);
+    }
+
+    header.backgroundColor = [UIColor clearColor];
+    header.layer.backgroundColor = UIColor.clearColor.CGColor;
+    header.opaque = NO;
+}
+
+static void ApolloSubredditIndexApplyModernTableSurfaceBackground(UITableView *tableView) {
+    if (!sModernSubredditDividers || !tableView) return;
+
+    // Transparent section headers reveal UITableView gaps; match the row surface instead.
+    UIColor *surfaceColor = ApolloSubredditIndexThemeListBackgroundColor(tableView, tableView);
+    tableView.backgroundColor = surfaceColor;
+    if (tableView.backgroundView) {
+        tableView.backgroundView.backgroundColor = surfaceColor;
+        tableView.backgroundView.opaque = ApolloSubredditIndexColorIsVisible(surfaceColor);
     }
 }
 
@@ -1080,6 +1129,7 @@ static void ApolloSubredditIndexInstallOrUpdate(UITableView *tableView) {
 
     objc_setAssociatedObject(tableView, &kApolloSubredditIndexTableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloSubredditIndexApplySeparatorInsets(tableView);
+    ApolloSubredditIndexApplyModernTableSurfaceBackground(tableView);
     ApolloSubredditIndexHideNativeIndex(tableView);
 
     UIView *container = tableView.superview ?: tableView;
@@ -1456,11 +1506,7 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
         return;
     }
 
-    ApolloSubredditIndexClearHeaderBackgrounds(header, label);
-    UIColor *backgroundColor = ApolloSubredditIndexThemeListBackgroundColor(tableView, header);
-    header.backgroundColor = backgroundColor;
-    header.layer.backgroundColor = backgroundColor.CGColor;
-    header.opaque = NO;
+    ApolloSubredditIndexClearHeaderChrome(header, label);
 
     label.text = text;
     label.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
