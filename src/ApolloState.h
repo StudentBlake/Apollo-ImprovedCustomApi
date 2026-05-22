@@ -3,6 +3,7 @@
 extern NSString *sRedditClientId;
 extern NSString *sRedditClientSecret;
 extern NSString *sImgurClientId;
+extern NSString *sImageChestAPIToken;
 extern NSString *sRedirectURI;
 extern NSString *sUserAgent;
 extern NSString *sRandomSubredditsSource;
