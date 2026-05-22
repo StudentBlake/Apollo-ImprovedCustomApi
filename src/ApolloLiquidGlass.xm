@@ -491,30 +491,50 @@ static void ApolloCancelLiquidLensGesture(UITabBar *tabBar) {
 
 %end
 
+static void ApolloLiquidGlassFixNavBarAdaptorLayout(_UITAMICAdaptorView *adaptor) {
+    if (!IsLiquidGlass() || !adaptor) return;
+
+    UIView *superview = adaptor.superview;
+    if (superview) {
+        CGFloat superHeight = CGRectGetHeight(superview.bounds);
+        CGFloat adaptorHeight = CGRectGetHeight(adaptor.bounds);
+        if (superHeight > 0.0 && adaptorHeight > 0.0) {
+            CGFloat maxY = CGRectGetMaxY(adaptor.frame);
+            BOOL pinnedToTop = adaptor.frame.origin.y < 2.0;
+            BOOL extendsPastBottom = maxY > superHeight + 2.0;
+            if (pinnedToTop || extendsPastBottom) {
+                CGRect frame = adaptor.frame;
+                frame.origin.y = floor((superHeight - adaptorHeight) / 2.0);
+                adaptor.frame = frame;
+            }
+        }
+    }
+
+    for (UIView *child in adaptor.subviews) {
+        if (![NSStringFromClass([child class]) isEqualToString:@"UIView"]) continue;
+
+        CGRect containerBounds = child.bounds;
+        CGFloat containerHeight = CGRectGetHeight(containerBounds);
+        if (containerHeight <= 0.0) continue;
+
+        for (UIView *subview in child.subviews) {
+            if (![subview isKindOfClass:[UIButton class]]) continue;
+
+            CGRect buttonFrame = subview.frame;
+            if (!CGRectEqualToRect(buttonFrame, containerBounds)) {
+                subview.frame = containerBounds;
+            }
+        }
+    }
+}
+
 // Fix nav bar button height misalignment on iOS 26 Liquid Glass
-// UIButtons inside _UITAMICAdaptorView can be taller than their parent
+// UIButtons inside _UITAMICAdaptorView can be taller than their parent and pinned to the top edge.
 %hook _UITAMICAdaptorView
 
 - (void)layoutSubviews {
     %orig;
-    if (!IsLiquidGlass()) return;
-
-    // Find the direct UIView child and fix UIButton heights within it
-    for (UIView *child in self.subviews) {
-        if (![NSStringFromClass([child class]) isEqualToString:@"UIView"]) continue;
-
-        CGFloat parentHeight = child.bounds.size.height;
-        for (UIView *subview in child.subviews) {
-            if (![subview isKindOfClass:[UIButton class]]) continue;
-
-            // Fix button height to match parent
-            if (subview.bounds.size.height != parentHeight) {
-                CGRect frame = subview.frame;
-                frame.size.height = parentHeight;
-                subview.frame = frame;
-            }
-        }
-    }
+    ApolloLiquidGlassFixNavBarAdaptorLayout(self);
 }
 
 %end
