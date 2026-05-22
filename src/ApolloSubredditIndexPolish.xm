@@ -22,6 +22,8 @@ static char kApolloSubredditModernPressOverlayKey;
 static char kApolloSubredditHeaderSeparatorKey;
 static char kApolloSubredditHeaderGradientLayerKey;
 static char kApolloSubredditHeaderLoggedKey;
+static char kApolloSubredditMultiredditsSectionKey;
+static char kApolloSubredditMultiredditChildStyledKey;
 
 static NSString * const ApolloSubredditIndexFavoriteSubredditsKey = @"FavoriteSubreddits";
 
@@ -67,7 +69,9 @@ static NSInteger sApolloFavoriteMutationOriginalLastRow = NSNotFound;
 static void ApolloSubredditIndexScheduleFavoritesRefresh(UITableView *tableView, UITableViewCell *cell, NSString *subredditName, UIControl *nativeControl);
 static CGPoint ApolloSubredditIndexClampedContentOffset(UITableView *tableView, CGPoint requestedOffset);
 static CGRect ApolloSubredditIndexProxyFrameForCell(UITableViewCell *cell, UIControl *nativeControl);
-static void ApolloSubredditIndexApplyRedditListCellPolishOnce(UITableViewCell *cell);
+static void ApolloSubredditIndexApplyRedditListCellPolishOnce(UITableViewCell *cell, BOOL skipLeadingMarginClamp);
+static void ApolloSubredditIndexPrepareCellForDisplay(UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath);
+static void ApolloSubredditIndexApplyMultiredditChildStyleIfNeeded(UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath);
 
 static UIViewController *ApolloSubredditIndexOwningViewController(UIView *view) {
     UIResponder *responder = view;
@@ -1292,16 +1296,143 @@ static void ApolloSubredditIndexApplyModernPressedCellSelectionChrome(UITableVie
     ApolloSubredditIndexSetModernPressOverlayVisible(cell, tableView, cell.highlighted || cell.selected, NO);
 }
 
-static void ApolloSubredditIndexPrepareCellForDisplay(UITableView *tableView, UITableViewCell *cell) {
+static NSInteger ApolloSubredditIndexMultiredditsSection(UITableView *tableView) {
+    if (!tableView) return NSNotFound;
+    NSNumber *section = objc_getAssociatedObject(tableView, &kApolloSubredditMultiredditsSectionKey);
+    return section ? section.integerValue : NSNotFound;
+}
+
+static void ApolloSubredditIndexTrackMultiredditsSection(UITableView *tableView, UIView *headerView, NSInteger section) {
+    if (!tableView || !headerView) return;
+
+    UILabel *label = ApolloSubredditIndexHeaderLabelInView(headerView);
+    if (!label) return;
+
+    NSString *text = [[label.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] uppercaseString];
+    if ([text isEqualToString:@"MULTIREDDITS"]) {
+        objc_setAssociatedObject(tableView, &kApolloSubredditMultiredditsSectionKey, @(section), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static BOOL ApolloSubredditIndexViewLooksLikeMultiredditChildLine(UIView *view) {
+    if (!view || view.hidden || view.alpha < 0.05) return NO;
+    if ([view isKindOfClass:[UILabel class]] || [view isKindOfClass:[UIImageView class]] || [view isKindOfClass:[UIControl class]]) {
+        return NO;
+    }
+
+    CGRect frame = view.bounds;
+    if (frame.size.width <= 0.0 || frame.size.height <= 0.0) return NO;
+    if (CGRectGetWidth(frame) > 4.0 || CGRectGetHeight(frame) < 20.0) return NO;
+    return YES;
+}
+
+static BOOL ApolloSubredditIndexViewIsMultiredditChildLine(UIView *candidate, UIView *contentView) {
+    if (!ApolloSubredditIndexViewLooksLikeMultiredditChildLine(candidate)) return NO;
+
+    CGRect frameInContent = [contentView convertRect:candidate.bounds fromView:candidate];
+    if (CGRectGetMinX(frameInContent) > 36.0) return NO;
+    return YES;
+}
+
+static UIView *ApolloSubredditIndexMultiredditChildLineView(UITableViewCell *cell) {
+    if (!cell) return nil;
+
+    UIView *contentView = cell.contentView;
+    if (!contentView) return nil;
+
+    UIView *bestLine = nil;
+    CGFloat bestHeight = 0.0;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:contentView];
+    while (stack.count > 0) {
+        UIView *candidate = stack.lastObject;
+        [stack removeLastObject];
+
+        if (ApolloSubredditIndexViewIsMultiredditChildLine(candidate, contentView)) {
+            CGFloat height = CGRectGetHeight([contentView convertRect:candidate.bounds fromView:candidate]);
+            if (height > bestHeight) {
+                bestLine = candidate;
+                bestHeight = height;
+            }
+        }
+
+        for (UIView *subview in candidate.subviews) {
+            [stack addObject:subview];
+        }
+    }
+
+    return bestLine;
+}
+
+static BOOL ApolloSubredditIndexCellIsMultiredditChild(UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath) {
+    if (!sModernSubredditDividers || !tableView || !cell || !indexPath) return NO;
+
+    NSInteger multiredditsSection = ApolloSubredditIndexMultiredditsSection(tableView);
+    if (multiredditsSection == NSNotFound || indexPath.section != multiredditsSection) return NO;
+
+    return ApolloSubredditIndexMultiredditChildLineView(cell) != nil;
+}
+
+static void ApolloSubredditIndexClearMultiredditChildBackgroundInView(UIView *view, UIView *lineView, UILabel *labelToKeep) {
+    if (!view) return;
+    if (view == lineView) return;
+    if ([view isKindOfClass:[UIImageView class]]) return;
+    if ([view isKindOfClass:[UILabel class]] && view != labelToKeep) return;
+
+    view.backgroundColor = [UIColor clearColor];
+    view.layer.backgroundColor = UIColor.clearColor.CGColor;
+    view.opaque = NO;
+
+    for (UIView *subview in view.subviews) {
+        if (subview == lineView) continue;
+        ApolloSubredditIndexClearMultiredditChildBackgroundInView(subview, lineView, labelToKeep);
+    }
+}
+
+static void ApolloSubredditIndexApplyMultiredditChildStyle(UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath) {
+    if (!ApolloSubredditIndexCellIsMultiredditChild(tableView, cell, indexPath)) return;
+
+    UIView *lineView = ApolloSubredditIndexMultiredditChildLineView(cell);
+    if (!lineView) return;
+
+    cell.backgroundColor = [UIColor clearColor];
+    cell.contentView.backgroundColor = [UIColor clearColor];
+    cell.opaque = NO;
+    if (cell.backgroundView) {
+        cell.backgroundView.backgroundColor = [UIColor clearColor];
+        cell.backgroundView.opaque = NO;
+    }
+
+    ApolloSubredditIndexClearMultiredditChildBackgroundInView(cell.contentView, lineView, nil);
+
+    UIColor *accentColor = ApolloSubredditIndexThemeAccentColor(tableView, cell);
+    UIColor *resolvedAccent = ApolloSubredditIndexResolvedColor(accentColor, cell.traitCollection);
+    UIColor *lineColor = [resolvedAccent colorWithAlphaComponent:0.82];
+    lineView.backgroundColor = lineColor;
+    lineView.layer.backgroundColor = lineColor.CGColor;
+    lineView.opaque = YES;
+
+    objc_setAssociatedObject(cell, &kApolloSubredditMultiredditChildStyledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloSubredditIndexApplyMultiredditChildStyleIfNeeded(UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath) {
+    if (!tableView || !cell) return;
+    if (!indexPath) indexPath = [tableView indexPathForCell:cell];
+    if (!indexPath) return;
+    ApolloSubredditIndexApplyMultiredditChildStyle(tableView, cell, indexPath);
+}
+
+static void ApolloSubredditIndexPrepareCellForDisplay(UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath) {
     if (!cell || !ApolloSubredditIndexEnsureSubredditTable(tableView)) return;
 
     ApolloSubredditIndexApplySeparatorInsets(tableView);
     ApolloSubredditIndexApplyCellMarginsOnce(cell);
     Class redditListCellClass = ApolloSubredditIndexRedditListTableViewCellClass();
+    BOOL isMultiredditChild = ApolloSubredditIndexCellIsMultiredditChild(tableView, cell, indexPath);
     if (redditListCellClass && [cell isKindOfClass:redditListCellClass]) {
-        ApolloSubredditIndexApplyRedditListCellPolishOnce(cell);
+        ApolloSubredditIndexApplyRedditListCellPolishOnce(cell, isMultiredditChild);
     }
     ApolloSubredditIndexApplyCellSelectionChrome(cell, tableView);
+    ApolloSubredditIndexApplyMultiredditChildStyleIfNeeded(tableView, cell, indexPath);
 }
 
 static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tableView) {
@@ -1401,13 +1532,14 @@ static void ApolloSubredditIndexWillDisplayHeaderHook(id self, SEL _cmd, UITable
         orig_ApolloRedditListWillDisplayHeader(self, _cmd, tableView, view, section);
     }
     ApolloSubredditIndexStyleHeaderView(view, tableView);
+    ApolloSubredditIndexTrackMultiredditsSection(tableView, view, section);
 }
 
 static void ApolloSubredditIndexWillDisplayCellHook(id self, SEL _cmd, UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath) {
     if (orig_ApolloRedditListWillDisplayCell) {
         orig_ApolloRedditListWillDisplayCell(self, _cmd, tableView, cell, indexPath);
     }
-    ApolloSubredditIndexPrepareCellForDisplay(tableView, cell);
+    ApolloSubredditIndexPrepareCellForDisplay(tableView, cell, indexPath);
 }
 
 static Class ApolloSubredditIndexRedditListViewControllerClass(void) {
@@ -1503,6 +1635,7 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
 }
 
 - (void)reloadData {
+    objc_setAssociatedObject((UITableView *)self, &kApolloSubredditMultiredditsSectionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     %orig;
     ApolloSubredditIndexInstallOrUpdate((UITableView *)self);
 }
@@ -1539,6 +1672,7 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
     ApolloSubredditIndexRestoreCellSelectionChrome((UITableViewCell *)self);
     objc_setAssociatedObject((UITableViewCell *)self, &kApolloSubredditCellMarginsAppliedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject((UITableViewCell *)self, &kApolloSubredditRowPolishAppliedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject((UITableViewCell *)self, &kApolloSubredditMultiredditChildStyledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 - (void)layoutSubviews {
@@ -1550,6 +1684,7 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
         ApolloSubredditIndexApplyCellSelectionChrome((UITableViewCell *)self, tableView);
         ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
+        ApolloSubredditIndexApplyMultiredditChildStyleIfNeeded(tableView, (UITableViewCell *)self, [tableView indexPathForCell:(UITableViewCell *)self]);
     }
 }
 
@@ -1609,13 +1744,15 @@ static UIStackView *ApolloSubredditIndexRedditListMainStackView(UITableViewCell 
     return [value isKindOfClass:[UIStackView class]] ? (UIStackView *)value : nil;
 }
 
-static void ApolloSubredditIndexApplyRedditListCellPolishOnce(UITableViewCell *cell) {
+static void ApolloSubredditIndexApplyRedditListCellPolishOnce(UITableViewCell *cell, BOOL skipLeadingMarginClamp) {
     if ([objc_getAssociatedObject(cell, &kApolloSubredditRowPolishAppliedKey) boolValue]) return;
 
-    UIEdgeInsets margins = cell.contentView.layoutMargins;
-    if (margins.left < ApolloSubredditRowBalancedLeadingMargin) {
-        margins.left = ApolloSubredditRowBalancedLeadingMargin;
-        cell.contentView.layoutMargins = margins;
+    if (!skipLeadingMarginClamp) {
+        UIEdgeInsets margins = cell.contentView.layoutMargins;
+        if (margins.left < ApolloSubredditRowBalancedLeadingMargin) {
+            margins.left = ApolloSubredditRowBalancedLeadingMargin;
+            cell.contentView.layoutMargins = margins;
+        }
     }
 
     UIStackView *mainStack = ApolloSubredditIndexRedditListMainStackView(cell);
