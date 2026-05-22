@@ -796,6 +796,20 @@ static void ApolloLPSetImageNodeBackgroundForURL(ASNetworkImageNode *imageNode, 
     imageNode.backgroundColor = target;
 }
 
+static void ApolloLPSetAvatarNodeVisible(ASNetworkImageNode *avatarNode, BOOL visible) {
+    if (!avatarNode) return;
+    avatarNode.placeholderEnabled = visible;
+    avatarNode.layer.opacity = visible ? 1.0 : 0.0;
+    if (avatarNode.isNodeLoaded) {
+        avatarNode.view.hidden = !visible;
+        avatarNode.view.alpha = visible ? 1.0 : 0.0;
+    }
+    if (!visible) {
+        ApolloLPSetNetworkImageURLPreservingImage(avatarNode, nil);
+        ApolloLPSetImageNodeBackgroundForURL(avatarNode, nil);
+    }
+}
+
 static void ApolloLPApplyFallbackImage(ASNetworkImageNode *imageNode, NSURL *imageURL, UIImage *image, NSString *host) {
     if (!imageNode || !image || image.size.width <= 0.0 || image.size.height <= 0.0) return;
     NSURL *currentURL = objc_getAssociatedObject(imageNode, &kApolloLinkPreviewImageFallbackURLKey);
@@ -1498,10 +1512,14 @@ static id ApolloLPBuildCompactCardSpec(ASDisplayNode *hostNode, NSURL *url, Apol
     if (!bundle) return nil;
 
     ASNetworkImageNode *imageNode = bundle[@"image"];
+    ASNetworkImageNode *avatarNode = bundle[@"avatar"];
     ASTextNode *siteNode = bundle[@"site"];
     ASTextNode *titleNode = bundle[@"title"];
     ASTextNode *descriptionNode = bundle[@"description"];
     ASDisplayNode *backgroundNode = bundle[@"background"];
+
+    ApolloLPSetAvatarNodeVisible(avatarNode, NO);
+    ApolloLPLogOncePerHost(ApolloLPHost(url), @"hid-orphan-avatar-compact");
 
     Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
     Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
@@ -1559,10 +1577,14 @@ static id ApolloLPBuildHeroCardSpec(ASDisplayNode *hostNode, NSURL *url, ApolloL
     if (!bundle) return nil;
 
     ASNetworkImageNode *imageNode = bundle[@"image"];
+    ASNetworkImageNode *avatarNode = bundle[@"avatar"];
     ASTextNode *siteNode = bundle[@"site"];
     ASTextNode *titleNode = bundle[@"title"];
     ASTextNode *descriptionNode = bundle[@"description"];
     ASDisplayNode *backgroundNode = bundle[@"background"];
+
+    ApolloLPSetAvatarNodeVisible(avatarNode, NO);
+    ApolloLPLogOncePerHost(ApolloLPHost(url), @"hid-orphan-avatar-hero");
 
     Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
     Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
@@ -1669,6 +1691,8 @@ static id ApolloLPBuildBlueskyPostCardSpec(ASDisplayNode *hostNode, NSURL *url, 
     ASTextNode *titleNode = bundle[@"title"];
     ASTextNode *descriptionNode = bundle[@"description"];
     ASDisplayNode *backgroundNode = bundle[@"background"];
+
+    ApolloLPSetAvatarNodeVisible(avatarNode, YES);
 
     Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
     Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
@@ -1784,6 +1808,8 @@ static id ApolloLPBuildRedditUserCardSpec(ASDisplayNode *hostNode, NSURL *url, A
     ASTextNode *descriptionNode = bundle[@"description"];
     ASDisplayNode *backgroundNode = bundle[@"background"];
 
+    ApolloLPSetAvatarNodeVisible(avatarNode, YES);
+
     Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
     Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
     Class backgroundClass = ApolloLPClass(@"ASBackgroundLayoutSpec");
@@ -1861,6 +1887,8 @@ static id ApolloLPBuildRedditSubredditCardSpec(ASDisplayNode *hostNode, NSURL *u
     ASTextNode *descriptionNode = bundle[@"description"];
     ASDisplayNode *backgroundNode = bundle[@"background"];
 
+    ApolloLPSetAvatarNodeVisible(avatarNode, YES);
+
     Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
     Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
     Class backgroundClass = ApolloLPClass(@"ASBackgroundLayoutSpec");
@@ -1923,10 +1951,14 @@ static id ApolloLPBuildPlaceholderSpec(ASDisplayNode *hostNode, NSURL *url, Apol
     if (!bundle) return nil;
 
     ASNetworkImageNode *imageNode = bundle[@"image"];
+    ASNetworkImageNode *avatarNode = bundle[@"avatar"];
     ASTextNode *siteNode = bundle[@"site"];
     ASTextNode *titleNode = bundle[@"title"];
     ASTextNode *descriptionNode = bundle[@"description"];
     ASDisplayNode *backgroundNode = bundle[@"background"];
+
+    ApolloLPSetAvatarNodeVisible(avatarNode, NO);
+    ApolloLPLogOncePerHost(ApolloLPHost(url), @"hid-orphan-avatar-placeholder");
 
     Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
     Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
