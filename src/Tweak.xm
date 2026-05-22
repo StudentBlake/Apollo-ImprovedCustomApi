@@ -3,11 +3,13 @@
 #import <objc/message.h>
 #import <sys/utsname.h>
 #import <Security/Security.h>
+#import <StoreKit/StoreKit.h>
 
 #import "fishhook.h"
 #import "ApolloCommon.h"
 #import "ApolloRedditMediaUpload.h"
 #import "ApolloImageUploadHost.h"
+#import "ApolloNotificationBackend.h"
 #import "ApolloState.h"
 #import "Tweak.h"
 #import "CustomAPIViewController.h"
@@ -150,6 +152,7 @@ static NSString *const announcementUrl = @"apollogur.download/api/apollonounceme
 
 static NSArray *const blockedUrls = @[
     @"apollopushserver.xyz",
+    @"apollonotifications.com",
     @"beta.apollonotifications.com",
     @"apolloreq.com",
     @"notify.bugsnag.com",
@@ -304,6 +307,26 @@ static NSCache<NSString *, NSString *> *subredditListCache;
         return writeDict(dict);
     }
     return url;
+}
+
+
+// Sideloaded builds have no App Store receipt file, so Apollo's receipt check
+// fails immediately with "Unable to retrieve receipt information..." before it
+// even attempts SKReceiptRefreshRequest. Returning a path to a real (dummy) file
+// satisfies the file-exists check and lets Apollo proceed to backend registration.
+- (NSURL *)appStoreReceiptURL {
+    static NSString *dummyPath;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dummyPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"apollo_dummy_receipt"];
+    });
+    if (![[NSFileManager defaultManager] fileExistsAtPath:dummyPath]) {
+        // Minimal ASN.1 SEQUENCE shell — non-empty so basic format checks pass
+        uint8_t bytes[] = {0x30, 0x01, 0x00};
+        [[NSData dataWithBytes:bytes length:sizeof(bytes)] writeToFile:dummyPath atomically:YES];
+    }
+    ApolloLog(@"[StoreKit] Spoofing appStoreReceiptURL -> %@", dummyPath);
+    return [NSURL fileURLWithPath:dummyPath];
 }
 %end
 
@@ -663,6 +686,18 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
         request = currentRequest;
     }
 
+    // Self-hosted notification backend rewrite. When the user has configured a
+    // URL, redirect requests targeting the three legacy Apollo push hosts to
+    // their own backend before the blocklist drops them. With no URL set this
+    // returns nil and the legacy block-and-drop behavior below applies.
+    NSURLRequest *notifBackendRequest = ApolloRewriteRequestForNotificationBackend(request);
+    if (notifBackendRequest) {
+        [self setValue:notifBackendRequest forKey:@"_originalRequest"];
+        [self setValue:notifBackendRequest forKey:@"_currentRequest"];
+        %orig;
+        return;
+    }
+
     NSURL *requestURL = request.URL;
     NSString *requestString = requestURL.absoluteString;
 
@@ -833,6 +868,31 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
 
 %end
 
+// Sideloaded builds have no App Store receipt, so SKReceiptRefreshRequest always
+// fails and Apollo shows "Unable to retrieve receipt information..." when the user
+// tries to enable notifications. Intercept start and immediately call the success
+// delegate callback so Apollo's Ultra check passes without hitting the App Store.
+%hook SKReceiptRefreshRequest
+- (void)start {
+    ApolloLog(@"[StoreKit] SKReceiptRefreshRequest intercepted — faking success for sideloaded build");
+    id<SKRequestDelegate> delegate = self.delegate;
+    if ([delegate respondsToSelector:@selector(requestDidFinish:)]) {
+        [delegate requestDidFinish:self];
+    }
+}
+%end
+
+// Sideloaded builds have no App Store presence, so review prompts serve no purpose
+// and fire repeatedly without the App Store's rate limiting. Suppress both APIs.
+%hook SKStoreReviewController
++ (void)requestReview {
+    ApolloLog(@"[StoreKit] Suppressing SKStoreReviewController requestReview");
+}
++ (void)requestReviewInScene:(UIWindowScene *)windowScene {
+    ApolloLog(@"[StoreKit] Suppressing SKStoreReviewController requestReviewInScene:");
+}
+%end
+
 // Reddit API can returns "error" as a dict (e.g. {"reason":"UNAUTHORIZED",...})
 // instead of a numeric code. Multiple Apollo code paths call [dict[@"error"] integerValue]
 // on the response, including unhookable block invokes. Adding integerValue to NSDictionary
@@ -895,6 +955,7 @@ static void initializeRandomSources() {
                                     UDKeyImageUploadProvider: @(ImageUploadProviderImgur),
                                     UDKeyShowUserAvatars: @NO,
                                     UDKeyUseProfileAvatarTabIcon: @NO,
+                                    UDKeyShowSubredditHeaders: @NO,
                                     UDKeyAutoHideTabBarShowOnIdle: @NO,
                                     UDKeyEnableBulkTranslation: @NO,
                                     UDKeyAutoTranslateOnAppear: @YES,
@@ -908,7 +969,10 @@ static void initializeRandomSources() {
                                     UDKeyTagFilterMode: @"blur",
                                     UDKeyTagFilterNSFW: @YES,
                                     UDKeyTagFilterSpoiler: @YES,
-                                    UDKeyTagFilterSubredditOverrides: @{}};
+                                    UDKeyTagFilterSubredditOverrides: @{},
+                                    UDKeyNotificationBackendURL: @"",
+                                    UDKeyNotificationBackendRegistrationToken: @"",
+                                    UDKeyRedditClientSecret: @""};
     NSUserDefaults *standardDefaults = [NSUserDefaults standardUserDefaults];
     [standardDefaults registerDefaults:defaultValues];
 
@@ -916,6 +980,7 @@ static void initializeRandomSources() {
     NSDictionary *persistentDomain = bundleID.length > 0 ? [standardDefaults persistentDomainForName:bundleID] : nil;
 
     sRedditClientId = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedditClientId] ?: @"" copy];
+    sRedditClientSecret = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedditClientSecret] ?: @"" copy];
     sImgurClientId = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyImgurClientId] ?: @"" copy];
     sRedirectURI = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedirectURI] ?: @"" copy];
     sUserAgent = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyUserAgent] ?: @"" copy];
@@ -945,6 +1010,7 @@ static void initializeRandomSources() {
     sImageUploadProvider = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyImageUploadProvider];
     sShowUserAvatars = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
     sUseProfileAvatarTabIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon];
+    sShowSubredditHeaders = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowSubredditHeaders];
     sAutoHideTabBarShowOnIdle = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutoHideTabBarShowOnIdle];
     sModernSubredditDividers = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyModernSubredditDividers];
     sEnableBulkTranslation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableBulkTranslation];

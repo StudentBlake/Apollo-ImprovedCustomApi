@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.14.0] - 2026-05-20
+
+### Features
+
+- **Notification Backend** support (requires paid Apple Developer account): point Apollo at your own forked self-hosted [apollo-backend](https://github.com/nickclyde/apollo-backend) instance so push registrations, watchers, and inbox checks route there instead of being silently dropped. (Thanks @nickclyde!)
+    - Configure in **Settings > Custom API > Notification Backend** with the backend URL and optional registration token. Leave empty to keep current blocking behavior.
+    - APNs delivery still requires a paid Apple Developer account on the signing side. 
+- New **Reddit API Secret** field in **Settings > Custom API > API Keys** so per-account Reddit credentials can be forwarded to a self-hosted notification backend that performs token refreshes server-side. Usually left empty for installed-app Reddit credentials. (Thanks @nickclyde!)
+
+### Fixes
+
+- Improve **Profile Picture Tab Icon** reliability across Liquid Glass tab bar refreshes, theme changes, and app foregrounding.
+- Refine Liquid Glass **Hide Bars on Scroll** idle behavior with smoother re-collapse/re-expand handling and disable the idle setting on unsupported iOS versions.
+- Improve performance and stability across subreddit list polish, rich link previews, and the media post composer.
+
 ## [v2.13.0] - 2026-05-19
 
 ### Features
@@ -41,7 +56,6 @@ All notable changes to this project will be documented in this file.
 - Fix Reddit-hosted multi-image photo posts by submitting them as native Reddit galleries instead of Imgur albums, including the post-submit comments permalink Apollo opens after success (thanks @icpryde!)
 - Fix the Photo Post composer thumbnail strip so all selected images can be reviewed with reliable horizontal scrolling before submit (thanks @icpryde!)
 - Improve user avatar loading on multireddits
-
 
 ## [v2.11.0] - 2026-05-15
 
@@ -159,7 +173,7 @@ All notable changes to this project will be documented in this file.
 
 The Custom API settings view has also been redesigned and is now accessible directly from Settings.
 
-**Note:** Ultra features that rely on push notifications **still do not work**, and are unlikely to ever be supported.
+**Note:** Ultra features that rely on push notifications do not work out of the box. Advanced users can optionally point the tweak at a self-hosted [apollo-backend](https://github.com/nickclyde/apollo-backend) fork (see **Settings > Custom API > Notification Backend**) — APNs delivery requires a paid Apple Developer account on the signing side.
 
 | | | |
 |:--:|:--:|:--:|
@@ -415,6 +429,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v2.14.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.13.0...v2.14.0
 [v2.13.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.12.0b...v2.13.0
 [v2.12.0b]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.11.0...v2.12.0b
 [v2.11.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.10.0...v2.11.0

@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 
 extern NSString *sRedditClientId;
+extern NSString *sRedditClientSecret;
 extern NSString *sImgurClientId;
 extern NSString *sRedirectURI;
 extern NSString *sUserAgent;
@@ -21,6 +22,7 @@ extern NSInteger sUnmuteCommentsVideos;
 extern BOOL sProxyImgurDDG;
 extern BOOL sShowUserAvatars;
 extern BOOL sUseProfileAvatarTabIcon;
+extern BOOL sShowSubredditHeaders;
 extern BOOL sAutoHideTabBarShowOnIdle;
 extern BOOL sModernSubredditDividers;
 

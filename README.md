@@ -43,6 +43,14 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 - **Inline Media Previews**: Render images, GIFs, videos, and Imgur albums inline within posts and comments (Settings > Custom API > Media > Inline Media Previews)
 - **Rich Link Previews**: Render metadata-rich link cards in post bodies and comments (Settings > Custom API > Media)
 - **User Profile Pictures**: Show Reddit user avatars next to usernames in feeds, comments, and user profiles (Settings > Custom API > Media > Show User Profile Pictures)
+- **Self-hosted Notifications** (advanced): Optionally route push registrations, watchers, and inbox checks through your own forked [apollo-backend](https://github.com/nickclyde/apollo-backend) instance instead of having those requests silently dropped (Settings > Custom API > Notification Backend)
+
+### Self-hosted notifications (advanced)
+
+The legacy Apollo push backends went dark in June 2023 and are otherwise blocked by the tweak. If you run your own instance of [nickclyde/apollo-backend](https://github.com/nickclyde/apollo-backend) (with your own Reddit OAuth `CLIENT_ID` / `CLIENT_SECRET` baked into its env vars), you can set the URL under **Settings > Custom API > Notification Backend** and the tweak will route all `apollopushserver.xyz`, `beta.apollonotifications.com`, and `apolloreq.com` traffic to that host instead. Leave the field empty to keep the current "silently dropped" behavior.
+
+> [!IMPORTANT]
+> APNs delivery requires a real `aps-environment` entitlement, which Apple only grants under a paid Apple Developer team. Free-account sideloads can still register and exercise the watcher CRUD, but push notifications will never actually arrive.
 
 ## Known Issues
 
@@ -164,6 +172,10 @@ Thank you to these wonderful people:
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/wdeezy"><img src="https://avatars.githubusercontent.com/u/188708293?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="wdeezy"/></a><br /><sub><b>wdeezy</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/commits?author=wdeezy" title="Code">Code</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/ryannair05"><img src="https://avatars.githubusercontent.com/u/23365226?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="ryannair05"/></a><br /><sub><b>ryannair05</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/commits?author=ryannair05" title="Code">Code</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/ichitaso"><img src="https://avatars.githubusercontent.com/u/980215?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="ichitaso"/></a><br /><sub><b>ichitaso</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/commits?author=ichitaso" title="Code">Code</a></td>
+    </tr>
+    <tr>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/epheterson"><img src="https://avatars.githubusercontent.com/u/151483?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="epheterson"/></a><br /><sub><b>epheterson</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/commits?author=epheterson" title="Code">Code</a></td>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/nickclyde"><img src="https://avatars.githubusercontent.com/u/9121162?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="nickclyde"/></a><br /><sub><b>nickclyde</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/commits?author=nickclyde" title="Code">Code</a></td>
     </tr>
   </tbody>
 </table>
