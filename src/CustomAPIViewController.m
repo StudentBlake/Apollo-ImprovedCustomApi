@@ -4,6 +4,8 @@
 #import "ApolloState.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloLinkPreviewCache.h"
+#import "ApolloSubredditCustomBannerCache.h"
+#import "ApolloSubredditCustomIconCache.h"
 #import "UserDefaultConstants.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
@@ -607,7 +609,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionAPIKeys: return 8; // 6 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
         case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 12 : 11;
-        case SectionSubreddits: return 6;
+        case SectionSubreddits: return 8;
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
         case SectionAbout: return 4; // GitHub + Thanks To + Export Logs + Version
         default: return 0;
@@ -1106,35 +1108,50 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyModernSubredditDividers]
                                            action:@selector(modernSubredditDividersSwitchToggled:)];
         case 1:
+            return [self switchCellWithIdentifier:@"Cell_Sub_Headers"
+                                            label:@"Show Subreddit Headers"
+                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowSubredditHeaders]
+                                           action:@selector(subredditHeadersSwitchToggled:)];
+        case 2:
             return [self textFieldCellWithIdentifier:@"Cell_Sub_TrendLimit"
                                                label:@"Trending Subreddits Limit"
                                          placeholder:@"(unlimited)"
                                                 text:sTrendingSubredditsLimit
                                                  tag:TagTrendingLimit
                                            numerical:YES];
-        case 2:
+        case 3:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_Trending"
                                                       label:@"Trending Source"
                                                 placeholder:defaultTrendingSubredditsSource
                                                        text:sTrendingSubredditsSource
                                                         tag:TagTrendingSubredditsSource];
-        case 3:
+        case 4:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_Random"
                                                       label:@"Random Source"
                                                 placeholder:defaultRandomSubredditsSource
                                                        text:sRandomSubredditsSource
                                                         tag:TagRandomSubredditsSource];
-        case 4:
+        case 5:
             return [self switchCellWithIdentifier:@"Cell_Sub_RandNSFW"
                                             label:@"Show RandNSFW in Search"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowRandNsfw]
                                            action:@selector(randNsfwSwitchToggled:)];
-        case 5:
+        case 6:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_RandNSFW_Source"
                                                       label:@"RandNSFW Source"
                                                 placeholder:@"(empty)"
                                                        text:sRandNsfwSubredditsSource
                                                         tag:TagRandNsfwSubredditsSource];
+        case 7: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Sub_ClearCustomBanners"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Sub_ClearCustomBanners"];
+            }
+            cell.textLabel.text = @"Clear Custom Banners & Icons";
+            cell.textLabel.textColor = self.view.tintColor;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            return cell;
+        }
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -1385,6 +1402,11 @@ typedef NS_ENUM(NSInteger, Tag) {
         } else if (indexPath.row == 2) {
             [self exportLogs];
         }
+    } else if (indexPath.section == SectionSubreddits) {
+        if (indexPath.row == 7) {
+            UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+            [self promptClearCustomSubredditBannersFromSourceView:cell];
+        }
     } else if (indexPath.section == SectionMedia) {
         UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
         BOOL avatarsOn = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
@@ -1441,6 +1463,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     if (indexPath.section == SectionBackupRestore) return YES;
     if (indexPath.section == SectionAPIKeys && (indexPath.row == 6 || indexPath.row == 7)) return YES;
     if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 5 || indexPath.row == 6 || indexPath.row == 7 || indexPath.row == 10 || indexPath.row == 11)) return YES;
+    if (indexPath.section == SectionSubreddits && indexPath.row == 7) return YES;
     if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
     if (indexPath.section == SectionNotificationBackend && indexPath.row == 2) return YES;
     return NO;
@@ -1748,6 +1771,12 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sProxyImgurDDG forKey:UDKeyProxyImgurDDG];
 }
 
+- (void)subredditHeadersSwitchToggled:(UISwitch *)sender {
+    sShowSubredditHeaders = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sShowSubredditHeaders forKey:UDKeyShowSubredditHeaders];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloSubredditHeaderToggleChangedNotification" object:nil];
+}
+
 - (void)userAvatarsSwitchToggled:(UISwitch *)sender {
     BOOL wasOn = sShowUserAvatars;
     sShowUserAvatars = sender.isOn;
@@ -1786,6 +1815,18 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (void)inlineImagesSwitchToggled:(UISwitch *)sender {
     sEnableInlineImages = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sEnableInlineImages forKey:UDKeyEnableInlineImages];
+}
+
+- (void)promptClearCustomSubredditBannersFromSourceView:(__unused UIView *)sourceView {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Clear Custom Banners & Icons?"
+                                                                   message:@"Locally saved custom subreddit banner and icon images will be removed. Official Reddit art will show again where available."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Clear" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        [[ApolloSubredditCustomBannerCache sharedCache] clearAllCustomBanners];
+        [[ApolloSubredditCustomIconCache sharedCache] clearAllCustomIcons];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)promptClearLinkPreviewCacheFromSourceView:(__unused UIView *)sourceView {
