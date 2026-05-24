@@ -39,6 +39,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     TagRedditClientId = 0,
     TagRedditClientSecret,
     TagImgurClientId,
+    TagImageChestAPIToken,
     TagRedirectURI,
     TagUserAgent,
     TagTrendingSubredditsSource,
@@ -603,7 +604,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case SectionBackupRestore: return 2;
-        case SectionAPIKeys: return 7; // 5 text fields + Can't sign in? + Instructions
+        case SectionAPIKeys: return 8; // 6 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
         case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 12 : 11;
         case SectionSubreddits: return 6;
@@ -782,8 +783,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
     textField.text = text;
     textField.placeholder = placeholder;
-    textField.adjustsFontSizeToFitWidth = YES;
-    textField.minimumFontSize = 12;
+    if (tag == TagImageChestAPIToken) {
+        textField.textAlignment = NSTextAlignmentLeft;
+        textField.adjustsFontSizeToFitWidth = NO;
+    } else {
+        textField.adjustsFontSizeToFitWidth = YES;
+        textField.minimumFontSize = 12;
+    }
 
     return cell;
 }
@@ -852,7 +858,13 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                 text:sImgurClientId
                                                  tag:TagImgurClientId
                                            numerical:NO];
-        case 3: {
+        case 3:
+            return [self stackedTextFieldCellWithIdentifier:@"Cell_API_ImageChest"
+                                                      label:@"Img Chest API Key"
+                                                placeholder:@"Img Chest API Key"
+                                                       text:sImageChestAPIToken
+                                                        tag:TagImageChestAPIToken];
+        case 4: {
             NSString *schemesDetail = [NSString stringWithFormat:@"Must match the app whose API key you're using. URI scheme (part before ://) must be registered in Info.plist under CFBundleURLTypes. Registered: %@", [[self registeredURLSchemes] componentsJoinedByString:@", "]];
             UITableViewCell *cell = [self stackedTextFieldCellWithIdentifier:@"Cell_API_Redirect"
                                                                       label:@"Redirect URI"
@@ -870,13 +882,13 @@ typedef NS_ENUM(NSInteger, Tag) {
             }
             return cell;
         }
-        case 4:
+        case 5:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_API_UserAgent"
                                                       label:@"User Agent"
                                                 placeholder:defaultUserAgent
                                                        text:sUserAgent
                                                         tag:TagUserAgent];
-        case 5: {
+        case 6: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Troubleshooting"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Troubleshooting"];
@@ -885,7 +897,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.textLabel.text = @"Can't sign in?";
             return cell;
         }
-        case 6: {
+        case 7: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Instructions"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Instructions"];
@@ -1275,7 +1287,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             attributes:plainAttrs];
     } else if (section == SectionAPIKeys) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Reddit and Imgur no longer allow new API key creation. Existing keys still work if you have access. You may be able to use credentials from another 3rd-party app ("
+            initWithString:@"Reddit and Imgur no longer allow new API key creation. Existing keys still work if you have access. Image Chest is optional and improves album metadata when a personal token is configured. You may be able to use credentials from another 3rd-party app ("
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"more info"
             attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:13], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn?tab=readme-ov-file#dont-have-an-api-key"]}]];
@@ -1360,9 +1372,9 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self restoreSettings];
         }
     } else if (indexPath.section == SectionAPIKeys) {
-        if (indexPath.row == 5) {
+        if (indexPath.row == 6) {
             [self pushTroubleshootingViewController];
-        } else if (indexPath.row == 6) {
+        } else if (indexPath.row == 7) {
             [self pushInstructionsViewController];
         }
     } else if (indexPath.section == SectionAbout) {
@@ -1427,7 +1439,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
-    if (indexPath.section == SectionAPIKeys && (indexPath.row == 5 || indexPath.row == 6)) return YES;
+    if (indexPath.section == SectionAPIKeys && (indexPath.row == 6 || indexPath.row == 7)) return YES;
     if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 5 || indexPath.row == 6 || indexPath.row == 7 || indexPath.row == 10 || indexPath.row == 11)) return YES;
     if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
     if (indexPath.section == SectionNotificationBackend && indexPath.row == 2) return YES;
@@ -1625,6 +1637,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sImgurClientId = textField.text;
         [[NSUserDefaults standardUserDefaults] setValue:sImgurClientId forKey:UDKeyImgurClientId];
+    } else if (textField.tag == TagImageChestAPIToken) {
+        textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        sImageChestAPIToken = textField.text;
+        [[NSUserDefaults standardUserDefaults] setValue:sImageChestAPIToken forKey:UDKeyImageChestAPIToken];
     } else if (textField.tag == TagRedirectURI) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sRedirectURI = textField.text;
@@ -1976,6 +1992,7 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
     sRedditClientId = [defaults stringForKey:UDKeyRedditClientId];
     sRedditClientSecret = [defaults stringForKey:UDKeyRedditClientSecret] ?: @"";
     sImgurClientId = [defaults stringForKey:UDKeyImgurClientId];
+    sImageChestAPIToken = [defaults stringForKey:UDKeyImageChestAPIToken];
     sRedirectURI = [defaults stringForKey:UDKeyRedirectURI];
     sUserAgent = [defaults stringForKey:UDKeyUserAgent];
     sBlockAnnouncements = [defaults boolForKey:UDKeyBlockAnnouncements];
