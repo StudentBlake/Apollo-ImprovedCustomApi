@@ -1,8 +1,12 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
+NS_ASSUME_NONNULL_BEGIN
+
 extern NSString * const ApolloSubredditInfoUpdatedNotification;
 extern NSString * const ApolloSubredditNameKey;
+
+FOUNDATION_EXPORT NSString *ApolloSubredditFormattedMemberCount(NSInteger subscriberCount);
 
 @interface ApolloSubredditInfo : NSObject
 
@@ -11,6 +15,7 @@ extern NSString * const ApolloSubredditNameKey;
 @property(nonatomic, copy) NSString *aboutText;
 @property(nonatomic, strong) NSURL *iconURL;
 @property(nonatomic, strong) NSURL *bannerURL;
+@property(nonatomic) NSInteger subscriberCount;
 @property(nonatomic, strong) NSDate *fetchedAt;
 
 - (instancetype)initWithSubredditName:(NSString *)subredditName
@@ -18,6 +23,7 @@ extern NSString * const ApolloSubredditNameKey;
                             aboutText:(NSString *)aboutText
                               iconURL:(NSURL *)iconURL
                             bannerURL:(NSURL *)bannerURL
+                      subscriberCount:(NSInteger)subscriberCount
                             fetchedAt:(NSDate *)fetchedAt;
 
 @end
@@ -32,3 +38,5 @@ extern NSString * const ApolloSubredditNameKey;
 - (void)clearAllCaches;
 
 @end
+
+NS_ASSUME_NONNULL_END

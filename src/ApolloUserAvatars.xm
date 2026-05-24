@@ -949,6 +949,7 @@ static NSUInteger sApolloInlineAvatarGaveUpLogCount = 0;
 static NSUInteger sApolloInlineAvatarLateReapplyLogCount = 0;
 static NSUInteger sApolloInlineAvatarRewriteLogCount = 0;
 static BOOL sApolloProfileTabSyncingView = NO;
+static NSUInteger sApolloInlineAvatarPlaceholderLogCount = 0;
 
 static BOOL ApolloInlineAvatarShouldLog(NSUInteger *counter) {
     if (!counter || *counter >= ApolloInlineAvatarLogLimit) return NO;
@@ -985,7 +986,6 @@ static BOOL ApolloPrepareAvatarRewriteForTextNode(id textNode, NSAttributedStrin
         if (!avatarImage && info.iconURL) avatarImage = [cache cachedImageForURL:info.iconURL];
         if (!decoratorImage && info.decoratorURL) decoratorImage = [cache cachedImageForURL:info.decoratorURL];
     }
-    if (!info || !avatarImage) return NO;
 
     CGFloat diameter = ApolloInlineAvatarDiameterForObject(textNode);
     NSString *token = ApolloAvatarTokenForInfo(info, avatarImage != nil, decoratorImage != nil, diameter);
@@ -1069,6 +1069,18 @@ static BOOL ApolloBindInlineAvatarTextNodeForCell(id cell, NSString *username) {
     return YES;
 }
 
+static BOOL ApolloApplyInlineAvatarPlaceholderToCell(id cell, NSString *username) {
+    username = ApolloAvatarNormalizedUsername(username);
+    if (!cell || username.length == 0 || !sShowUserAvatars) return NO;
+    if (!ApolloBindInlineAvatarTextNodeForCell(cell, username)) return NO;
+
+    BOOL applied = ApolloApplyAvatarRenderToCell(cell, username, nil, nil, nil);
+    if (applied && ApolloInlineAvatarShouldLog(&sApolloInlineAvatarPlaceholderLogCount)) {
+        ApolloLog(@"[UserAvatars] Inline avatar placeholder applied u/%@ cell=%p", username, cell);
+    }
+    return applied;
+}
+
 static void ApolloApplyInlineAvatarInfoToCell(id cell, NSString *username, ApolloUserProfileInfo *info);
 
 static void ApolloScheduleInlineAvatarLateReapplyForCell(id cell, NSString *username) {
@@ -1132,6 +1144,8 @@ static void ApolloApplyInlineAvatarInfoToCell(id cell, NSString *username, Apoll
         return;
     }
 
+    ApolloApplyInlineAvatarPlaceholderToCell(cell, username);
+
     __weak id weakCell = cell;
     [cache requestImageForURL:info.iconURL completion:^(UIImage *loadedImage) {
         id cellNow = weakCell;
@@ -1178,6 +1192,10 @@ static void ApolloScheduleInlineAvatarInfoFetchAttempt(id cell, NSString *userna
 
         ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
         ApolloUserProfileInfo *cachedInfo = [cache cachedInfoForUsername:username];
+        UIImage *cachedImage = cachedInfo.iconURL ? [cache cachedImageForURL:cachedInfo.iconURL] : nil;
+        if (!cachedInfo.iconURL || !cachedImage) {
+            ApolloApplyInlineAvatarPlaceholderToCell(strongCell, username);
+        }
         if (cachedInfo.iconURL) {
             ApolloClearPendingInlineAvatarFetch(strongCell, username);
             ApolloApplyInlineAvatarInfoToCell(strongCell, username, cachedInfo);
@@ -1255,7 +1273,12 @@ static void ApolloApplyAvatarToCellWithDiameter(id cell, NSString *username, CGF
 
     ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
     ApolloUserProfileInfo *cachedInfo = [cache cachedInfoForUsername:username];
-    if (cachedInfo.iconURL && ApolloBindInlineAvatarTextNodeForCell(cell, username)) ApolloApplyInlineAvatarInfoToCell(cell, username, cachedInfo);
+    UIImage *cachedImage = cachedInfo.iconURL ? [cache cachedImageForURL:cachedInfo.iconURL] : nil;
+    BOOL canBindTextNode = ApolloBindInlineAvatarTextNodeForCell(cell, username);
+    if (canBindTextNode && (!cachedInfo.iconURL || !cachedImage)) {
+        ApolloApplyInlineAvatarPlaceholderToCell(cell, username);
+    }
+    if (cachedInfo.iconURL && canBindTextNode) ApolloApplyInlineAvatarInfoToCell(cell, username, cachedInfo);
     else ApolloScheduleInlineAvatarInfoFetchForCell(cell, username);
 }
 

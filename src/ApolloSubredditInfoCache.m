@@ -8,6 +8,26 @@ NSString * const ApolloSubredditNameKey = @"subredditName";
 static NSTimeInterval const ApolloSubredditInfoCacheTTL = 7.0 * 24.0 * 60.0 * 60.0;
 static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
 
+NSString *ApolloSubredditFormattedMemberCount(NSInteger subscriberCount) {
+    if (subscriberCount < 0) return @"";
+    if (subscriberCount == 0) return @"0 members";
+    if (subscriberCount >= 1000000) {
+        double millions = subscriberCount / 1000000.0;
+        if (millions >= 10.0) {
+            return [NSString stringWithFormat:@"%.0fM members", millions];
+        }
+        return [NSString stringWithFormat:@"%.1fM members", millions];
+    }
+    if (subscriberCount >= 1000) {
+        double thousands = subscriberCount / 1000.0;
+        if (thousands >= 100.0) {
+            return [NSString stringWithFormat:@"%.0fk members", thousands];
+        }
+        return [NSString stringWithFormat:@"%.1fk members", thousands];
+    }
+    return [NSString stringWithFormat:@"%ld members", (long)subscriberCount];
+}
+
 @implementation ApolloSubredditInfo
 
 - (instancetype)initWithSubredditName:(NSString *)subredditName
@@ -15,6 +35,7 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
                             aboutText:(NSString *)aboutText
                               iconURL:(NSURL *)iconURL
                             bannerURL:(NSURL *)bannerURL
+                      subscriberCount:(NSInteger)subscriberCount
                             fetchedAt:(NSDate *)fetchedAt {
     self = [super init];
     if (self) {
@@ -23,6 +44,7 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
         _aboutText = [aboutText copy];
         _iconURL = iconURL;
         _bannerURL = bannerURL;
+        _subscriberCount = subscriberCount;
         _fetchedAt = fetchedAt ?: [NSDate date];
     }
     return self;
@@ -109,14 +131,18 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
 }
 
 - (NSDictionary *)dictionaryForInfo:(ApolloSubredditInfo *)info {
-    return @{
+    NSMutableDictionary *dict = [@{
         @"subredditName": info.subredditName ?: @"",
         @"displayName": info.displayName ?: @"",
         @"aboutText": info.aboutText ?: @"",
         @"iconURL": info.iconURL.absoluteString ?: @"",
         @"bannerURL": info.bannerURL.absoluteString ?: @"",
         @"fetchedAt": @([info.fetchedAt timeIntervalSince1970]),
-    };
+    } mutableCopy];
+    if (info.subscriberCount >= 0) {
+        dict[@"subscriberCount"] = @(info.subscriberCount);
+    }
+    return dict;
 }
 
 - (ApolloSubredditInfo *)infoFromDictionary:(NSDictionary *)dict fallbackSubredditName:(NSString *)fallbackSubredditName {
@@ -129,6 +155,11 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
     NSString *aboutText = [self cleanStringFromValue:dict[@"aboutText"]];
     NSURL *iconURL = [self URLFromString:dict[@"iconURL"]];
     NSURL *bannerURL = [self URLFromString:dict[@"bannerURL"]];
+    NSInteger subscriberCount = -1;
+    id subscriberValue = dict[@"subscriberCount"];
+    if ([subscriberValue respondsToSelector:@selector(integerValue)]) {
+        subscriberCount = [subscriberValue integerValue];
+    }
     NSTimeInterval timestamp = [dict[@"fetchedAt"] doubleValue];
     NSDate *fetchedAt = timestamp > 0 ? [NSDate dateWithTimeIntervalSince1970:timestamp] : [NSDate distantPast];
     if (!dict[@"displayName"] && !dict[@"aboutText"]) fetchedAt = [NSDate distantPast];
@@ -138,6 +169,7 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
                                                     aboutText:aboutText
                                                       iconURL:iconURL
                                                     bannerURL:bannerURL
+                                              subscriberCount:subscriberCount
                                                     fetchedAt:fetchedAt];
 }
 
@@ -245,12 +277,18 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
     NSURL *bannerURL = [self URLFromString:dataDict[@"banner_img"]] ?:
         [self URLFromString:dataDict[@"mobile_banner_image"]] ?:
         [self URLFromString:dataDict[@"banner_background_image"]];
+    NSInteger subscriberCount = -1;
+    id subscriberValue = dataDict[@"subscribers"];
+    if ([subscriberValue respondsToSelector:@selector(integerValue)]) {
+        subscriberCount = [subscriberValue integerValue];
+    }
 
     return [[ApolloSubredditInfo alloc] initWithSubredditName:subredditName
                                                   displayName:displayName
                                                     aboutText:aboutText
                                                       iconURL:iconURL
                                                     bannerURL:bannerURL
+                                              subscriberCount:subscriberCount
                                                     fetchedAt:[NSDate date]];
 }
 
