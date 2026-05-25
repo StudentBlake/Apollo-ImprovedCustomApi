@@ -1941,15 +1941,31 @@ static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node) {
     objc_setAssociatedObject(node, &kApolloPlayOverlayViewKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void ApolloApplyStaticCoverToPausedNode(ASNetworkImageNode *imageNode, UIImage *cover) {
-    if (!imageNode || !cover) return;
-    if ([imageNode respondsToSelector:@selector(setImage:)]) {
+// Pause inline GIF playback without clearing animatedImage via KVC — that path
+// races with Texture teardown during AutoplayGIFs preference changes and caused
+// SIGSEGV in _locked_setAnimatedImage on stale nodes.
+static void ApolloPauseInlineGIFNode(ASNetworkImageNode *imageNode, UIImage *cover) {
+    if (!imageNode) return;
+    if (![objc_getAssociatedObject(imageNode, &kApolloInlineAnimatedGIFKey) boolValue]) return;
+
+    objc_setAssociatedObject(imageNode, &kApolloInlineGIFUserForcedPlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    UIView *view = [imageNode respondsToSelector:@selector(view)] ? [imageNode view] : nil;
+    if (view) {
+        ApolloMarkViewAsInlineGIF(view);
+        ApolloSetInlineGIFUserForcedPlay(view, NO);
+        UIView *animView = ApolloFindFLAnimatedImageViewInView(view);
+        if (animView) {
+            ApolloApplyFLAnimatedImageViewAutoplayGate(animView);
+        }
+    }
+
+    if (cover && cover.size.width > 0 && [imageNode respondsToSelector:@selector(setImage:)]) {
         [imageNode setImage:cover];
     }
-    if ([imageNode respondsToSelector:@selector(setAnimatedImage:)]) {
-        @try {
-            [imageNode setValue:nil forKey:@"animatedImage"];
-        } @catch (__unused NSException *e) {}
+
+    if (view) {
+        ApolloInstallPlayOverlayOnView(view, imageNode);
     }
 }
 
@@ -2048,8 +2064,7 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
         }
 
         if (cover) {
-            ApolloApplyStaticCoverToPausedNode(strong, cover);
-            ApolloInstallPlayOverlayOnView(view, strong);
+            ApolloPauseInlineGIFNode(strong, cover);
             ApolloLog(@"[AutoplayGIF] policy node=%p retry=%lu staticCover=1 shouldPlay=0",
                       strong, (unsigned long)retryIndex);
             return;
@@ -2075,7 +2090,7 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
             return;
         }
 
-        ApolloInstallPlayOverlayOnView(view, strong);
+        ApolloPauseInlineGIFNode(strong, nil);
         ApolloLog(@"[AutoplayGIF] policy node=%p retry=%lu pausedNoCover=1 shouldPlay=0",
                   strong, (unsigned long)retryIndex);
     });
@@ -3019,9 +3034,11 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
         id node = note.object;
-        if (node) {
-            UIImage *cover = objc_getAssociatedObject(node, &kApolloInlineGIFCoverImageKey);
-            ApolloApplyInlineGIFPlaybackPolicyWithCover((ASNetworkImageNode *)node, cover, 0);
-        }
+        if (!node) return;
+        if (![objc_getAssociatedObject(node, &kApolloInlineAnimatedGIFKey) boolValue]) return;
+        // Skip recycled image nodes that lost their markdown host association.
+        if (!objc_getAssociatedObject(node, &kApolloHostMarkdownNodeKey)) return;
+        UIImage *cover = objc_getAssociatedObject(node, &kApolloInlineGIFCoverImageKey);
+        ApolloApplyInlineGIFPlaybackPolicyWithCover((ASNetworkImageNode *)node, cover, 0);
     }];
 }

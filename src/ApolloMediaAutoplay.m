@@ -343,16 +343,31 @@ void ApolloRegisterInlineGIFNode(id imageNode) {
     }
 }
 
+static dispatch_block_t sDeferredAutoplayRefreshBlock = NULL;
+
 void ApolloRefreshVisibleInlineGIFAutoplay(void) {
     ApolloInvalidateAutoplayCache();
-    NSHashTable *nodes = nil;
-    @synchronized (sInlineGIFNodes) {
-        nodes = [sInlineGIFNodes copy];
+    if (sDeferredAutoplayRefreshBlock) {
+        dispatch_block_cancel(sDeferredAutoplayRefreshBlock);
+        sDeferredAutoplayRefreshBlock = NULL;
     }
-    for (id node in nodes.allObjects) {
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloInlineGIFAutoplayRefreshNode"
-                                                            object:node];
-    }
+
+    dispatch_block_t block = dispatch_block_create((dispatch_block_flags_t)0, ^{
+        sDeferredAutoplayRefreshBlock = NULL;
+        // Coalesce bursts from NSUserDefaultsDidChange (e.g. Always -> Never).
+        NSHashTable *nodes = nil;
+        @synchronized (sInlineGIFNodes) {
+            nodes = [sInlineGIFNodes copy];
+        }
+        ApolloLog(@"[AutoplayGIF] refresh %lu registered inline GIF node(s)", (unsigned long)nodes.count);
+        for (id node in nodes.allObjects) {
+            if (!node) continue;
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloInlineGIFAutoplayRefreshNode"
+                                                                object:node];
+        }
+    });
+    sDeferredAutoplayRefreshBlock = block;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
 }
 
 void ApolloMediaAutoplayInstall(void) {
