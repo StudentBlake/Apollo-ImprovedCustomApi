@@ -451,8 +451,20 @@ static UIColor *ApolloGiphyBackgroundColorFromController(UIViewController *contr
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.item >= self.gifs.count) return;
     ApolloGiphyGIF *gif = self.gifs[indexPath.item];
-    if (self.onSelectGIF) self.onSelectGIF(gif);
-    [self dismissViewControllerAnimated:YES completion:nil];
+    void (^handler)(ApolloGiphyGIF *) = [self.onSelectGIF copy];
+    self.onSelectGIF = nil;
+
+    UIViewController *sheet = self.navigationController ?: self;
+    if (sheet.presentingViewController) {
+        [sheet dismissViewControllerAnimated:YES completion:^{
+            if (handler) handler(gif);
+        }];
+        return;
+    }
+
+    [self dismissViewControllerAnimated:YES completion:^{
+        if (handler) handler(gif);
+    }];
 }
 
 - (CGSize)collectionView:(UICollectionView *)collectionView layout:(UICollectionViewLayout *)collectionViewLayout sizeForItemAtIndexPath:(NSIndexPath *)indexPath {

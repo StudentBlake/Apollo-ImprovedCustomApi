@@ -18,6 +18,9 @@ static NSHashTable *sInlineGIFNodes = nil;
 static NSString *sLastLoggedAutoplayMode = nil;
 static BOOL sCachedShouldPlayValid = NO;
 static BOOL sCachedShouldPlay = NO;
+static BOOL sAutoplayRefreshStateValid = NO;
+static BOOL sAutoplayRefreshLastShouldPlay = NO;
+static NSString *sAutoplayRefreshLastMode = nil;
 
 static void ApolloInvalidateAutoplayCache(void) {
     sCachedShouldPlayValid = NO;
@@ -28,6 +31,67 @@ static void ApolloStartReachabilityMonitor(void);
 static BOOL ApolloNetworkIsOnWiFi(void);
 static BOOL ApolloNetworkIsOnCellular(void);
 static void ApolloLogAutoplayDecision(NSString *mode, BOOL shouldPlay);
+
+static Class ApolloASNetworkImageNodeClass(void) {
+    static Class cls = Nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cls = NSClassFromString(@"ASNetworkImageNode");
+    });
+    return cls;
+}
+
+BOOL ApolloInlineGIFNodeIsRegistryEligible(id imageNode) {
+    if (!imageNode || imageNode == (id)[NSNull null]) return NO;
+    Class cls = ApolloASNetworkImageNodeClass();
+    if (!cls || ![imageNode isKindOfClass:cls]) return NO;
+    if (![imageNode respondsToSelector:@selector(clearImage)]) return NO;
+    if (![imageNode respondsToSelector:@selector(setURL:)]) return NO;
+    if (![imageNode respondsToSelector:@selector(URL)]) return NO;
+    if (![imageNode respondsToSelector:@selector(isNodeLoaded)]) return NO;
+    if (![imageNode respondsToSelector:@selector(supernode)]) return NO;
+    return YES;
+}
+
+static void ApolloAutoplaySettingsDidChange(void) {
+    ApolloRefreshVisibleInlineGIFAutoplay();
+}
+
+@interface ApolloAutoplayDefaultsObserver : NSObject
+@end
+
+@implementation ApolloAutoplayDefaultsObserver
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary *)change
+                       context:(void *)context {
+    (void)object;
+    (void)change;
+    (void)context;
+    if ([keyPath isEqualToString:kApolloAutoplayGIFsKey] ||
+        [keyPath isEqualToString:kApolloAutoplayGIFsOverCellularKey]) {
+        ApolloAutoplaySettingsDidChange();
+    }
+}
+
+@end
+
+static ApolloAutoplayDefaultsObserver *sAutoplayDefaultsObserver = nil;
+
+static void ApolloInstallAutoplayDefaultsKVO(NSUserDefaults *defaults) {
+    if (!defaults || !sAutoplayDefaultsObserver) return;
+    for (NSString *key in @[kApolloAutoplayGIFsKey, kApolloAutoplayGIFsOverCellularKey]) {
+        @try {
+            [defaults addObserver:sAutoplayDefaultsObserver
+                       forKeyPath:key
+                          options:NSKeyValueObservingOptionNew
+                          context:NULL];
+        } @catch (__unused NSException *exception) {
+            ApolloLog(@"[AutoplayGIF] KVO unavailable for defaults key=%@", key);
+        }
+    }
+}
 
 static BOOL ApolloComputeShouldAutoplayInlineGIF(NSString **outMode) {
     if (@available(iOS 9.0, *)) {
@@ -333,7 +397,12 @@ NSURL *ApolloInlineGIFDisplayURLFromMetadata(NSURL *url, NSDictionary *mediaMeta
 }
 
 void ApolloRegisterInlineGIFNode(id imageNode) {
-    if (!imageNode) return;
+    if (!ApolloInlineGIFNodeIsRegistryEligible(imageNode)) {
+        if (imageNode) {
+            ApolloLog(@"[AutoplayGIF] register skipped ineligible class=%@", NSStringFromClass([imageNode class]));
+        }
+        return;
+    }
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         sInlineGIFNodes = [NSHashTable weakObjectsHashTable];
@@ -343,28 +412,74 @@ void ApolloRegisterInlineGIFNode(id imageNode) {
     }
 }
 
+void ApolloUnregisterInlineGIFNode(id imageNode) {
+    if (!imageNode || !sInlineGIFNodes) return;
+    @synchronized (sInlineGIFNodes) {
+        [sInlineGIFNodes removeObject:imageNode];
+    }
+}
+
 static dispatch_block_t sDeferredAutoplayRefreshBlock = NULL;
 
 void ApolloRefreshVisibleInlineGIFAutoplay(void) {
-    ApolloInvalidateAutoplayCache();
+    BOOL previousShouldPlay = ApolloShouldAutoplayInlineGIFCached();
+    NSString *previousMode = ApolloAutoplayGIFModeString();
+
     if (sDeferredAutoplayRefreshBlock) {
         dispatch_block_cancel(sDeferredAutoplayRefreshBlock);
         sDeferredAutoplayRefreshBlock = NULL;
     }
 
+    ApolloInvalidateAutoplayCache();
+
     dispatch_block_t block = dispatch_block_create((dispatch_block_flags_t)0, ^{
         sDeferredAutoplayRefreshBlock = NULL;
-        // Coalesce bursts from NSUserDefaultsDidChange (e.g. Always -> Never).
+        BOOL shouldPlay = ApolloShouldAutoplayInlineGIFCached();
+        NSString *mode = ApolloAutoplayGIFModeString();
+
+        if (sAutoplayRefreshStateValid &&
+            sAutoplayRefreshLastShouldPlay == shouldPlay &&
+            previousShouldPlay == shouldPlay &&
+            ((sAutoplayRefreshLastMode == mode) || [sAutoplayRefreshLastMode isEqualToString:mode]) &&
+            ((previousMode == mode) || [previousMode isEqualToString:mode])) {
+            ApolloLog(@"[AutoplayGIF] refresh skipped unchanged mode=%@ shouldPlay=%d", mode, shouldPlay);
+            return;
+        }
+        sAutoplayRefreshStateValid = YES;
+        sAutoplayRefreshLastShouldPlay = shouldPlay;
+        sAutoplayRefreshLastMode = [mode copy];
+
         NSHashTable *nodes = nil;
         @synchronized (sInlineGIFNodes) {
             nodes = [sInlineGIFNodes copy];
         }
-        ApolloLog(@"[AutoplayGIF] refresh %lu registered inline GIF node(s)", (unsigned long)nodes.count);
+        NSUInteger pauseCount = 0;
+        NSUInteger reloadCount = 0;
+        NSUInteger skipCount = 0;
+        NSUInteger prunedCount = 0;
         for (id node in nodes.allObjects) {
             if (!node) continue;
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloInlineGIFAutoplayRefreshNode"
-                                                                object:node];
+            if (!ApolloInlineGIFNodeIsRegistryEligible(node)) {
+                ApolloUnregisterInlineGIFNode(node);
+                prunedCount++;
+                continue;
+            }
+            if (shouldPlay) {
+                if (ApolloReloadInlineGIFImageNodeForAutoplay(node)) {
+                    reloadCount++;
+                } else {
+                    skipCount++;
+                }
+            } else {
+                if (ApolloPauseInlineGIFNodeForAutoplay(node)) {
+                    pauseCount++;
+                } else {
+                    skipCount++;
+                }
+            }
         }
+        ApolloLog(@"[AutoplayGIF] refresh mode=%@ nodes=%lu reload=%lu pause=%lu skip=%lu pruned=%lu shouldPlay=%d",
+                  mode, (unsigned long)nodes.count, (unsigned long)reloadCount, (unsigned long)pauseCount, (unsigned long)skipCount, (unsigned long)prunedCount, shouldPlay);
     });
     sDeferredAutoplayRefreshBlock = block;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
@@ -374,12 +489,9 @@ void ApolloMediaAutoplayInstall(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         ApolloStartReachabilityMonitor();
-        [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
-                                                          object:nil
-                                                           queue:[NSOperationQueue mainQueue]
-                                                      usingBlock:^(__unused NSNotification *note) {
-            ApolloRefreshVisibleInlineGIFAutoplay();
-        }];
+        sAutoplayDefaultsObserver = [ApolloAutoplayDefaultsObserver new];
+        ApolloInstallAutoplayDefaultsKVO([NSUserDefaults standardUserDefaults]);
+        ApolloInstallAutoplayDefaultsKVO([[NSUserDefaults alloc] initWithSuiteName:kApolloGroupSuiteName]);
         if (@available(iOS 9.0, *)) {
             [[NSNotificationCenter defaultCenter] addObserverForName:NSProcessInfoPowerStateDidChangeNotification
                                                               object:nil

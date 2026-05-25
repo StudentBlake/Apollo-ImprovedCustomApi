@@ -44,8 +44,22 @@ UIView *_Nullable ApolloFindFLAnimatedImageViewInView(UIView *view);
 /// Track inline GIF image nodes for settings refresh.
 void ApolloRegisterInlineGIFNode(id imageNode);
 
+/// Stop tracking an inline GIF node after state is cleared or the node is recycled.
+void ApolloUnregisterInlineGIFNode(id imageNode);
+
+/// YES when object is a live ASNetworkImageNode suitable for the inline GIF registry.
+BOOL ApolloInlineGIFNodeIsRegistryEligible(id imageNode);
+
 /// Re-evaluate autoplay for all registered inline GIF nodes.
 void ApolloRefreshVisibleInlineGIFAutoplay(void);
+
+/// Pause a registered inline GIF node (settings refresh — Never / WiFi blocked).
+/// Returns YES when a live node was paused.
+BOOL ApolloPauseInlineGIFNodeForAutoplay(id imageNode);
+
+/// Reload a registered inline GIF from its URL (settings refresh — Always / WiFi ok).
+/// Returns YES when a paused node was reloaded; NO when skipped or resume-only.
+BOOL ApolloReloadInlineGIFImageNodeForAutoplay(id imageNode);
 
 /// Install observers for AutoplayGIFs preference / reachability / Low Power Mode.
 void ApolloMediaAutoplayInstall(void);
