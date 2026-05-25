@@ -1520,10 +1520,6 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
         ASImageNode *strong = weakSelf;
         if (!strong || !retainedAnim || !ApolloInlineGIFGenerationMatches(strong, generation)) return;
 
-        if ([objc_getAssociatedObject(strong, &kApolloInlineAnimatedGIFKey) boolValue]) {
-            ApolloClearInlineGIFNodeState((ASNetworkImageNode *)strong);
-        }
-
         id anim = retainedAnim;
         UIImage *cover = nil;
         BOOL ready = YES;
@@ -1545,17 +1541,14 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
         ApolloRegisterInlineGIFNode(strong);
 
         if (!ApolloShouldAutoplayInlineGIFCached()) {
-            if (!cover || cover.size.width <= 0) {
-                @try {
-                    [strong setValue:nil forKey:@"animatedImage"];
-                } @catch (__unused NSException *e) {}
-            }
             ASDisplayNode *displayNode = (ASDisplayNode *)strong;
             if ([displayNode respondsToSelector:@selector(isNodeLoaded)] && [displayNode isNodeLoaded]) {
                 UIView *view = [displayNode view];
                 if (view) {
                     ApolloMarkViewAsInlineGIF(view);
-                    ApolloInstallPlayOverlayOnView(view, displayNode);
+                    if (cover && cover.size.width > 0) {
+                        ApolloInstallPlayOverlayOnView(view, displayNode);
+                    }
                 }
             }
         }
@@ -2028,10 +2021,29 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
             if (ApolloResumeInlineGIFPlaybackIfPossible(strong)) {
                 ApolloLog(@"[AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=1 forced=%d",
                           strong, (unsigned long)retryIndex, forcedPlay);
-            } else {
-                ApolloLog(@"[AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=0 forced=%d",
-                          strong, (unsigned long)retryIndex, forcedPlay);
+                return;
             }
+            // FLAnimatedImageView may not exist yet on freshly posted comments —
+            // retry without re-storing a cached animatedImage pointer (scroll crash).
+            if (retryIndex < 5) {
+                NSTimeInterval delay = (retryIndex == 0) ? 0.016 : kRetryDelays[MIN(retryIndex - 1, 1)];
+                __weak ASNetworkImageNode *weakRetry = strong;
+                __block dispatch_block_t retryBlock = nil;
+                retryBlock = dispatch_block_create((dispatch_block_flags_t)0, ^{
+                    if (dispatch_block_testcancel(retryBlock)) return;
+                    ASNetworkImageNode *retryNode = weakRetry;
+                    if (!retryNode || !ApolloInlineGIFGenerationMatches(retryNode, capturedGeneration)) return;
+                    if (![objc_getAssociatedObject(retryNode, &kApolloInlineAnimatedGIFKey) boolValue]) return;
+                    ApolloApplyInlineGIFPlaybackPolicyWithCover(retryNode, cover, retryIndex + 1);
+                });
+                ApolloTrackInlineGIFPendingPolicyBlock(strong, retryBlock);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), retryBlock);
+                ApolloLog(@"[AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=0 scheduling=%lu forced=%d",
+                          strong, (unsigned long)retryIndex, (unsigned long)(retryIndex + 1), forcedPlay);
+                return;
+            }
+            ApolloLog(@"[AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=0 forced=%d",
+                      strong, (unsigned long)retryIndex, forcedPlay);
             return;
         }
 
@@ -2043,9 +2055,26 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
             return;
         }
 
-        @try {
-            [strong setValue:nil forKey:@"animatedImage"];
-        } @catch (__unused NSException *e) {}
+        // Cover not ready yet — retry instead of clearing animatedImage to a blank box.
+        if (retryIndex < 5) {
+            NSTimeInterval delay = (retryIndex == 0) ? 0.050 : kRetryDelays[MIN(retryIndex - 1, 1)];
+            __weak ASNetworkImageNode *weakRetry = strong;
+            __block dispatch_block_t retryBlock = nil;
+            retryBlock = dispatch_block_create((dispatch_block_flags_t)0, ^{
+                if (dispatch_block_testcancel(retryBlock)) return;
+                ASNetworkImageNode *retryNode = weakRetry;
+                if (!retryNode || !ApolloInlineGIFGenerationMatches(retryNode, capturedGeneration)) return;
+                if (![objc_getAssociatedObject(retryNode, &kApolloInlineAnimatedGIFKey) boolValue]) return;
+                UIImage *storedCover = objc_getAssociatedObject(retryNode, &kApolloInlineGIFCoverImageKey);
+                ApolloApplyInlineGIFPlaybackPolicyWithCover(retryNode, storedCover, retryIndex + 1);
+            });
+            ApolloTrackInlineGIFPendingPolicyBlock(strong, retryBlock);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), retryBlock);
+            ApolloLog(@"[AutoplayGIF] policy node=%p retry=%lu waitingForCover=%lu shouldPlay=0",
+                      strong, (unsigned long)retryIndex, (unsigned long)(retryIndex + 1));
+            return;
+        }
+
         ApolloInstallPlayOverlayOnView(view, strong);
         ApolloLog(@"[AutoplayGIF] policy node=%p retry=%lu pausedNoCover=1 shouldPlay=0",
                   strong, (unsigned long)retryIndex);
