@@ -438,7 +438,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (void)setLinkPreviewMode:(NSInteger)mode body:(BOOL)body {
-    NSInteger row = body ? 5 : 6;
+    NSInteger row = (body ? 6 : 7) - (sEnableInlineImages ? 0 : 1);
     NSString *key = body ? UDKeyLinkPreviewBodyMode : UDKeyLinkPreviewCommentsMode;
     if (body) {
         sLinkPreviewBodyMode = mode;
@@ -479,7 +479,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                           @"cardColor": @(color),
                                                       }];
 
-    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:7 inSection:SectionMedia];
+    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:8 - (sEnableInlineImages ? 0 : 1) inSection:SectionMedia];
     if ([[self.tableView indexPathsForVisibleRows] containsObject:indexPath]) {
         [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
     }
@@ -630,7 +630,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 9; // 7 text fields + Can't sign in? + API key setup guide
         case SectionGeneral: return 8;
-        case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 12 : 11;
+        case SectionMedia: return (sShowUserAvatars ? 13 : 12) + (sEnableInlineImages ? 0 : -1);
         case SectionSubreddits: return 8;
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
         case SectionAbout: return 4; // GitHub + Thanks To + Export Logs + Version
@@ -1011,6 +1011,8 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (UITableViewCell *)mediaCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
+    // When the alignment row is hidden, physical rows ≥ 5 map to the next logical row
+    if (row >= 5 && !sEnableInlineImages) row += 1;
     switch (row) {
         case 0: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_GIFFallbackFormat"];
@@ -1059,6 +1061,18 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableInlineImages]
                                            action:@selector(inlineImagesSwitchToggled:)];
         case 5: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_InlineImageAlignment"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Media_InlineImageAlignment"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            }
+            cell.textLabel.text = @"Inline Media Alignment";
+            cell.detailTextLabel.text = [self inlineImageAlignmentText];
+            cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+            return cell;
+        }
+        case 6: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_LinkPreviewBodyMode"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Media_LinkPreviewBodyMode"];
@@ -1070,7 +1084,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
             return cell;
         }
-        case 6: {
+        case 7: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_LinkPreviewCommentsMode"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Media_LinkPreviewCommentsMode"];
@@ -1082,7 +1096,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
             return cell;
         }
-        case 7: {
+        case 8: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_LinkPreviewCardColor"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Media_LinkPreviewCardColor"];
@@ -1094,17 +1108,17 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
             return cell;
         }
-        case 8:
+        case 9:
             return [self switchCellWithIdentifier:@"Cell_Media_UserAvatars"
                                             label:@"Show User Profile Pictures"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars]
                                            action:@selector(userAvatarsSwitchToggled:)];
-        case 9:
+        case 10:
             return [self switchCellWithIdentifier:@"Cell_Media_ProfileTabAvatar"
                                             label:@"Profile Picture Tab Icon"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon]
                                            action:@selector(profileTabAvatarSwitchToggled:)];
-        case 10: {
+        case 11: {
             BOOL avatarsOn = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
             if (avatarsOn) {
                 UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_ClearAvatarCache"];
@@ -1125,7 +1139,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             return cell;
         }
-        case 11: {
+        case 12: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_ClearLinkPreviewCache"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Media_ClearLinkPreviewCache"];
@@ -1448,22 +1462,24 @@ typedef NS_ENUM(NSInteger, Tag) {
         }
     } else if (indexPath.section == SectionMedia) {
         UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
-        BOOL avatarsOn = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
-        if (indexPath.row == 0) {
+        NSInteger row = (indexPath.row >= 5 && !sEnableInlineImages) ? indexPath.row + 1 : indexPath.row;
+        if (row == 0) {
             [self presentPreferredGIFFallbackFormatSheetFromSourceView:cell];
-        } else if (indexPath.row == 1) {
+        } else if (row == 1) {
             [self presentUnmuteCommentsVideosModeSheetFromSourceView:cell];
-        } else if (indexPath.row == 2) {
+        } else if (row == 2) {
             [self presentImageUploadProviderSheetFromSourceView:cell];
-        } else if (indexPath.row == 5) {
+        } else if (row == 5) {
+            [self presentInlineImageAlignmentSheetFromSourceView:cell];
+        } else if (row == 6) {
             [self presentLinkPreviewModeSheetFromSourceView:cell body:YES];
-        } else if (indexPath.row == 6) {
+        } else if (row == 7) {
             [self presentLinkPreviewModeSheetFromSourceView:cell body:NO];
-        } else if (indexPath.row == 7) {
+        } else if (row == 8) {
             [self presentLinkPreviewCardColorSheetFromSourceView:cell];
-        } else if (indexPath.row == 10 && avatarsOn) {
+        } else if (row == 11 && sShowUserAvatars) {
             [self promptClearProfilePictureCacheFromSourceView:cell];
-        } else if ((indexPath.row == 10 && !avatarsOn) || (indexPath.row == 11 && avatarsOn)) {
+        } else if ((row == 11 && !sShowUserAvatars) || (row == 12 && sShowUserAvatars)) {
             [self promptClearLinkPreviewCacheFromSourceView:cell];
         }
     } else if (indexPath.section == SectionNotificationBackend && indexPath.row == 2) {
@@ -1501,8 +1517,11 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
     if (indexPath.section == SectionAPIKeys && (indexPath.row == 7 || indexPath.row == 8)) return YES;
-    if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 5 || indexPath.row == 6 || indexPath.row == 7 || indexPath.row == 10 || indexPath.row == 11)) return YES;
     if (indexPath.section == SectionSubreddits && indexPath.row == 7) return YES;
+    if (indexPath.section == SectionMedia) {
+        NSInteger row = (indexPath.row >= 5 && !sEnableInlineImages) ? indexPath.row + 1 : indexPath.row;
+        return (row == 0 || row == 1 || row == 2 || row == 5 || row == 6 || row == 7 || row == 8 || row == 11 || row == 12);
+    }
     if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
     if (indexPath.section == SectionNotificationBackend && indexPath.row == 2) return YES;
     return NO;
@@ -1848,13 +1867,14 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sShowUserAvatars forKey:UDKeyShowUserAvatars];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloUserAvatarsToggleChangedNotification" object:nil];
     if (sShowUserAvatars == wasOn) return;
-    NSArray<NSIndexPath *> *paths = @[[NSIndexPath indexPathForRow:10 inSection:SectionMedia]];
+    NSInteger offset = sEnableInlineImages ? 0 : 1;
+    NSArray<NSIndexPath *> *paths = @[[NSIndexPath indexPathForRow:11 - offset inSection:SectionMedia]];
     if (sShowUserAvatars) {
         [self.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
     } else {
         [self.tableView deleteRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
     }
-    [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(sShowUserAvatars ? 11 : 10) inSection:SectionMedia]]
+    [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(sShowUserAvatars ? 12 : 11) - offset inSection:SectionMedia]]
                           withRowAnimation:UITableViewRowAnimationNone];
 }
 
@@ -1878,8 +1898,60 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (void)inlineImagesSwitchToggled:(UISwitch *)sender {
+    BOOL wasOn = sEnableInlineImages;
     sEnableInlineImages = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sEnableInlineImages forKey:UDKeyEnableInlineImages];
+    if (sEnableInlineImages == wasOn) return;
+    NSArray<NSIndexPath *> *paths = @[[NSIndexPath indexPathForRow:5 inSection:SectionMedia]];
+    if (sEnableInlineImages) {
+        [self.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    } else {
+        [self.tableView deleteRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    }
+}
+
+- (NSString *)inlineImageAlignmentText {
+    switch (sInlineImageAlignment) {
+        case ApolloInlineImageAlignmentLeft:  return @"Left";
+        case ApolloInlineImageAlignmentRight: return @"Right";
+        default:                              return @"Center";
+    }
+}
+
+- (void)presentInlineImageAlignmentSheetFromSourceView:(UIView *)sourceView {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Inline Media Alignment"
+                                                                   message:@"Choose how inline media is positioned"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    NSString *centerTitle = (sInlineImageAlignment == ApolloInlineImageAlignmentCenter) ? @"Center (Current)" : @"Center";
+    NSString *leftTitle   = (sInlineImageAlignment == ApolloInlineImageAlignmentLeft)   ? @"Left (Current)"   : @"Left";
+    NSString *rightTitle  = (sInlineImageAlignment == ApolloInlineImageAlignmentRight)  ? @"Right (Current)"  : @"Right";
+
+    [sheet addAction:[UIAlertAction actionWithTitle:centerTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setInlineImageAlignment:ApolloInlineImageAlignmentCenter];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:leftTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setInlineImageAlignment:ApolloInlineImageAlignmentLeft];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:rightTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setInlineImageAlignment:ApolloInlineImageAlignmentRight];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+    if (popover && sourceView) {
+        popover.sourceView = sourceView;
+        popover.sourceRect = sourceView.bounds;
+    }
+
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)setInlineImageAlignment:(ApolloInlineImageAlignment)alignment {
+    sInlineImageAlignment = alignment;
+    [[NSUserDefaults standardUserDefaults] setInteger:sInlineImageAlignment forKey:UDKeyInlineImageAlignment];
+    NSIndexPath *alignmentRow = [NSIndexPath indexPathForRow:5 inSection:SectionMedia];
+    [self.tableView reloadRowsAtIndexPaths:@[alignmentRow] withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (void)promptClearCustomSubredditBannersFromSourceView:(__unused UIView *)sourceView {
