@@ -659,8 +659,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     switch (section) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 9; // 7 text fields + Can't sign in? + API key setup guide
-    case SectionGeneral: return sShowDeletedComments ? 10 : 9;
-    case SectionMedia: return (sShowUserAvatars ? 14 : 13) + (sEnableInlineImages ? 0 : -kApolloMediaInlineDependentRows);
+        case SectionGeneral: return sShowDeletedComments ? 11 : 10;
+        case SectionMedia: return (sShowUserAvatars ? 14 : 13) + (sEnableInlineImages ? 0 : -kApolloMediaInlineDependentRows);
         case SectionSubreddits: return sSubredditListEnhancements ? 9 : 8;
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
         case SectionAbout: return 5; // GitHub + Reddit + Thanks To + Export Logs + Version
@@ -1047,6 +1047,11 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.enabled = idleSupported;
             return cell;
         }
+        case 10:
+            return [self switchCellWithIdentifier:@"Cell_Gen_FlairColors"
+                                            label:@"Color Flairs"
+                                               on:[defaults boolForKey:UDKeyEnableFlairColors]
+                                           action:@selector(flairColorsSwitchToggled:)];
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -1944,6 +1949,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyEnableFLEX];
 }
 
+- (void)flairColorsSwitchToggled:(UISwitch *)sender {
+    BOOL on = sender.isOn;
+    sEnableFlairColors = on;
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:UDKeyEnableFlairColors];
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloFlairColorsChangedNotification object:nil];
+}
+
 - (void)randNsfwSwitchToggled:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyShowRandNsfw];
 }
@@ -2400,14 +2412,14 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
     sRedirectURI = [defaults stringForKey:UDKeyRedirectURI];
     sUserAgent = [defaults stringForKey:UDKeyUserAgent];
     sBlockAnnouncements = [defaults boolForKey:UDKeyBlockAnnouncements];
-    sTrendingSubredditsSource = [defaults stringForKey:UDKeyTrendingSubredditsSource];
-    sRandomSubredditsSource = [defaults stringForKey:UDKeyRandomSubredditsSource];
+    sTrendingSubredditsSource = [defaults stringForKey:UDKeyTrendingSubredditsSource];    sRandomSubredditsSource = [defaults stringForKey:UDKeyRandomSubredditsSource];
     sRandNsfwSubredditsSource = [defaults stringForKey:UDKeyRandNsfwSubredditsSource];
     sTrendingSubredditsLimit = [defaults stringForKey:UDKeyTrendingSubredditsLimit];
     sReadPostMaxCount = [defaults integerForKey:UDKeyReadPostMaxCount];
     sShowDeletedComments = [defaults boolForKey:UDKeyShowDeletedComments];
     sTapToRevealDeletedComments = [defaults boolForKey:UDKeyTapToRevealDeletedComments];
     sShowRecentlyReadThumbnails = [defaults boolForKey:UDKeyShowRecentlyReadThumbnails];
+    sEnableFlairColors = [defaults boolForKey:UDKeyEnableFlairColors];
     sPreferredGIFFallbackFormat = ([defaults integerForKey:UDKeyPreferredGIFFallbackFormat] == 0) ? 0 : 1;
     sUnmuteCommentsVideos = [defaults integerForKey:UDKeyUnmuteCommentsVideos];
     sImageUploadProvider = [defaults integerForKey:UDKeyImageUploadProvider];
