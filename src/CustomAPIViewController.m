@@ -662,7 +662,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return 4;
         case SectionAPIKeys: return 10; // 7 text fields + Can't sign in? + API key setup guide + Copy Widget Setup Code
         case SectionGeneral: return sShowDeletedComments ? 11 : 10;
-        case SectionMedia: return 12 + (sEnableInlineImages ? 0 : -kApolloMediaInlineDependentRows);
+        case SectionMedia: return 13 + (sEnableInlineImages ? 0 : -kApolloMediaInlineDependentRows);
         case SectionSubreddits: return sSubredditListEnhancements ? 8 : 7;
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
         case SectionAbout: return 5; // GitHub + Reddit + Thanks To + Export Logs + Version
@@ -1170,11 +1170,16 @@ typedef NS_ENUM(NSInteger, Tag) {
             return cell;
         }
         case 10:
+            return [self switchCellWithIdentifier:@"Cell_Media_TextPostThumbnails"
+                                            label:@"Text Post Thumbnails"
+                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedTextPostThumbnails]
+                                           action:@selector(textPostThumbnailsSwitchToggled:)];
+        case 11:
             return [self switchCellWithIdentifier:@"Cell_Media_UserAvatars"
                                             label:@"Show User Profile Pictures"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars]
                                            action:@selector(userAvatarsSwitchToggled:)];
-        case 11:
+        case 12:
             return [self switchCellWithIdentifier:@"Cell_Media_ProfileTabAvatar"
                                             label:@"Profile Picture Tab Icon"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon]
@@ -2036,6 +2041,11 @@ typedef NS_ENUM(NSInteger, Tag) {
     sShowSubredditHeaders = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sShowSubredditHeaders forKey:UDKeyShowSubredditHeaders];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloSubredditHeaderToggleChangedNotification" object:nil];
+}
+
+- (void)textPostThumbnailsSwitchToggled:(UISwitch *)sender {
+    sFeedTextPostThumbnails = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sFeedTextPostThumbnails forKey:UDKeyFeedTextPostThumbnails];
 }
 
 - (void)userAvatarsSwitchToggled:(UISwitch *)sender {
