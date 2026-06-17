@@ -75,6 +75,9 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloTweetBuddy.xm \
 	$(SRC_DIR)/ApolloVisionOSFix.xm \
     $(SRC_DIR)/ApolloWebAuthViewController.m \
+    $(SRC_DIR)/ApolloWebJSON.m \
+    $(SRC_DIR)/ApolloWebJSONIdentity.xm \
+    $(SRC_DIR)/ApolloWebSessionLoginViewController.m \
     $(SRC_DIR)/ApolloManualSignInViewController.m \
     $(SRC_DIR)/CustomAPIViewController.m \
     $(SRC_DIR)/TranslationSettingsViewController.m \
