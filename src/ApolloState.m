@@ -28,6 +28,7 @@ BOOL sUseProfileAvatarTabIcon = NO;
 BOOL sSocialLinksInProfile = YES;
 BOOL sShowSubredditHeaders = NO;
 BOOL sAutoHideTabBarShowOnIdle = NO;
+BOOL sKeepSearchBarInPlace = NO;
 BOOL sModernSubredditDividers = YES;
 BOOL sSubredditListEnhancements = YES;
 BOOL sEnableFlairColors = NO;

@@ -730,7 +730,9 @@ typedef NS_ENUM(NSInteger, Tag) {
         // row, so the count is its index + 1, minus the Web Session Login row when
         // the mode is off.
         case SectionAPIKeys: return kAPIKeyRowWidgetSetupCode + (sWebJSONEnabled ? 1 : 0);
-        case SectionGeneral: return sShowDeletedComments ? 11 : 10;
+        // General base rows + the search-in-place toggle (effectiveRow 11), minus
+        // the "Tap to Show Deleted Comments" row when Show Deleted Comments is off.
+        case SectionGeneral: return sShowDeletedComments ? 12 : 11;
         case SectionMedia: return 14 + (sEnableInlineImages ? 0 : -kApolloMediaInlineDependentRows);
         case SectionSubreddits: return sSubredditListEnhancements ? 8 : 7;
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
@@ -1169,6 +1171,19 @@ typedef NS_ENUM(NSInteger, Tag) {
                                             label:@"Color Flairs"
                                                on:[defaults boolForKey:UDKeyEnableFlairColors]
                                            action:@selector(flairColorsSwitchToggled:)];
+        case 11: {
+            BOOL lgSupported = IsLiquidGlass();
+            UITableViewCell *cell = [self switchCellWithIdentifier:@"Cell_Gen_KeepSearchInPlace"
+                                                             label:@"Keep Search Bar In Place"
+                                                            detail:@"Requires Liquid Glass."
+                                                                on:lgSupported && [defaults boolForKey:UDKeyKeepSearchBarInPlace]
+                                                            action:@selector(keepSearchBarInPlaceSwitchToggled:)];
+            UISwitch *toggleSwitch = [cell.accessoryView isKindOfClass:[UISwitch class]] ? (UISwitch *)cell.accessoryView : nil;
+            toggleSwitch.enabled = lgSupported;
+            cell.textLabel.enabled = lgSupported;
+            cell.detailTextLabel.enabled = lgSupported;
+            return cell;
+        }
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -2223,6 +2238,11 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (void)textPostThumbnailsSwitchToggled:(UISwitch *)sender {
     sFeedTextPostThumbnails = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sFeedTextPostThumbnails forKey:UDKeyFeedTextPostThumbnails];
+}
+
+- (void)keepSearchBarInPlaceSwitchToggled:(UISwitch *)sender {
+    sKeepSearchBarInPlace = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sKeepSearchBarInPlace forKey:UDKeyKeepSearchBarInPlace];
 }
 
 - (void)userAvatarsSwitchToggled:(UISwitch *)sender {
