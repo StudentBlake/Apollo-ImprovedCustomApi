@@ -1355,7 +1355,18 @@ static void initializeRandomSources() {
         sLinkPreviewCardColor = ApolloLinkPreviewCardColorNeutral;
         [standardDefaults setInteger:sLinkPreviewCardColor forKey:UDKeyLinkPreviewCardColor];
     }
-    ApolloLog(@"[LinkPreviews] settings loaded bodyMode=%ld commentsMode=%ld cardColor=%ld", (long)sLinkPreviewBodyMode, (long)sLinkPreviewCommentsMode, (long)sLinkPreviewCardColor);
+    // Free-form hex card color. Default is "" — the neutral card — so a bright
+    // full-fill is fully opt-in via the picker. The legacy preset enum is
+    // deliberately NOT promoted into a color: those presets only ever rendered as
+    // a faint 8-14% tint, so turning them into a bold full-card fill on update
+    // would be jarring. Existing pickers re-choose a color if they want one.
+    NSString *cardColorHex = [standardDefaults stringForKey:UDKeyLinkPreviewCardColorHex];
+    if (![standardDefaults objectForKey:UDKeyLinkPreviewCardColorHex]) {
+        cardColorHex = @"";
+        [standardDefaults setObject:@"" forKey:UDKeyLinkPreviewCardColorHex];
+    }
+    ApolloSetLinkPreviewCardColorHex(cardColorHex);
+    ApolloLog(@"[LinkPreviews] settings loaded bodyMode=%ld commentsMode=%ld cardColor=%ld cardColorHex=%@", (long)sLinkPreviewBodyMode, (long)sLinkPreviewCommentsMode, (long)sLinkPreviewCardColor, sLinkPreviewCardColorHex ?: @"(default)");
     sImageUploadProvider = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyImageUploadProvider];
     sShowUserAvatars = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
     sUseProfileAvatarTabIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon];
