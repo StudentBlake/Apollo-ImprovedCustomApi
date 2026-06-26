@@ -97,7 +97,11 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloWebJSON.m \
     $(SRC_DIR)/ApolloWebJSONIdentity.xm \
     $(SRC_DIR)/ApolloWebSessionLoginViewController.m \
+    $(SRC_DIR)/ApolloWebSessionStore.m \
     $(SRC_DIR)/ApolloManualSignInViewController.m \
+    $(SRC_DIR)/ApolloAccountCredentials.m \
+    $(SRC_DIR)/ApolloAccountSwitcherViewController.xm \
+    $(SRC_DIR)/ApolloSignInSplash.xm \
     $(SRC_DIR)/CustomAPIViewController.m \
     $(SRC_DIR)/ApolloLinkPreviewSettingsViewController.m \
     $(SRC_DIR)/TranslationSettingsViewController.m \
