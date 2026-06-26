@@ -79,6 +79,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloHideModSubreddits.xm \
     $(SRC_DIR)/ApolloSubredditSidebar.xm \
     $(SRC_DIR)/ApolloTagFilters.xm \
+    $(SRC_DIR)/ApolloThemeBuilder.xm \
+    $(SRC_DIR)/ApolloThemeBuilderViewController.m \
     $(SRC_DIR)/ApolloSearchInPlace.xm \
     $(SRC_DIR)/ApolloSearchHeaderOverlapFix.xm \
     $(SRC_DIR)/ApolloImageChestResolver.m \
@@ -106,7 +108,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/UIWindow+Apollo.m \
     $(SRC_DIR)/fishhook.c \
     $(SSZIPARCHIVE_FILES)
-ApolloReborn_FRAMEWORKS = UIKit Security AVFoundation AVKit OSLog NaturalLanguage ImageIO StoreKit Photos PhotosUI SafariServices SystemConfiguration WebKit AuthenticationServices CoreImage SwiftUI
+ApolloReborn_FRAMEWORKS = UIKit Security AVFoundation AVKit OSLog NaturalLanguage ImageIO StoreKit Photos PhotosUI SafariServices SystemConfiguration WebKit AuthenticationServices CoreImage SwiftUI UniformTypeIdentifiers
 ApolloReborn_LIBRARIES = z iconv
 # Apple's Translation framework (used by the on-device "apple" translation provider in
 # ApolloAppleTranslation.swift) only exists on iOS 18.0+. Weak-link it so the tweak still
@@ -115,6 +117,13 @@ ApolloReborn_LDFLAGS += -weak_framework Translation
 ApolloReborn_CFLAGS = -fobjc-arc -Wno-error=unguarded-availability-new -Wno-error=deprecated-declarations -Wno-module-import-in-extern-c -I$(THEOS_PROJECT_DIR)/$(SRC_DIR) -I$(THEOS_PROJECT_DIR)/liquid-glass/generated -I$(THEOS_PROJECT_DIR)/$(MODULES_DIR) -I$(THEOS_PROJECT_DIR)/$(SSZIPARCHIVE_DIR) -I$(THEOS_PROJECT_DIR)/$(SSZIPARCHIVE_DIR)/minizip -DHAVE_ARC4RANDOM_BUF -DHAVE_ICONV -DHAVE_INTTYPES_H -DHAVE_PKCRYPT -DHAVE_STDINT_H -DHAVE_WZAES -DHAVE_ZLIB -DZLIB_COMPAT
 
 ApolloReborn_BUNDLE_RESOURCE_DIRS = resources
+
+# Temporary theme-RE instrumentation (theme builder spike). Opt-in only:
+#   APOLLO_THEME_RE=1 scripts/run-in-sim.sh
+ifeq ($(APOLLO_THEME_RE),1)
+ApolloReborn_FILES += $(SRC_DIR)/ApolloThemeRE.xm
+ApolloReborn_CFLAGS += -DAPOLLO_THEME_RE=1
+endif
 
 # Simulator/dev builds (APOLLO_SIM_BUILD=1; see scripts/run-in-sim.sh) trim the
 # device-only pieces so the tweak links and loads against the iOS simulator SDK:
