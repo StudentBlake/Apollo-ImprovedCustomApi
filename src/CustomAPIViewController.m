@@ -2,6 +2,7 @@
 #import "ApolloCommon.h"
 #import "ApolloNotificationBackend.h"
 #import "ApolloWebSessionLoginViewController.h"
+#import "ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloState.h"
@@ -27,6 +28,7 @@ typedef NS_ENUM(NSInteger, SectionIndex) {
     SectionBackupRestore = 0,
     SectionAPIKeys,
     SectionGeneral,
+    SectionApolloAI,
     SectionLinkPreviews,
     SectionMedia,
     SectionSubreddits,
@@ -482,8 +484,9 @@ typedef NS_ENUM(NSInteger, Tag) {
         [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:kAPIKeyRowWebSessionLogin inSection:SectionAPIKeys]]
                               withRowAnimation:UITableViewRowAnimationNone];
     }
-    // Refresh the Rich Link Previews status subtitle after returning from its subview.
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:SectionLinkPreviews]
+    // Refresh the Apollo AI and Rich Link Previews status subtitles after returning
+    // from their subviews.
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(SectionApolloAI, 2)]
                   withRowAnimation:UITableViewRowAnimationNone];
 }
 
@@ -531,9 +534,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         // row, so the count is its index + 1, minus the Web Session Login row when
         // the mode is off.
         case SectionAPIKeys: return kAPIKeyRowWidgetSetupCode + (sWebJSONEnabled ? 1 : 0);
-        // General base rows + the search-in-place toggle (effectiveRow 11), minus
-        // the "Tap to Show Deleted Comments" row when Show Deleted Comments is off.
+        // General base rows + the search-in-place toggle (effectiveRow 11),
+        // minus the conditional "Tap to Show Deleted Comments" row.
         case SectionGeneral: return sShowDeletedComments ? 12 : 11;
+        case SectionApolloAI: return 1;
         case SectionLinkPreviews: return 1;
         // Media base rows (the three "Rich Link Previews" rows moved out to their
         // own SectionLinkPreviews), minus the two inline-dependent rows when off.
@@ -550,6 +554,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return @"Data";
         case SectionAPIKeys: return @"API Keys";
         case SectionGeneral: return @"General";
+        case SectionApolloAI: return @"Apollo AI";
         case SectionLinkPreviews: return @"Rich Link Previews";
         case SectionMedia: return @"Media";
         case SectionSubreddits: return @"Subreddits";
@@ -565,6 +570,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: cell = [self backupRestoreCellForRow:indexPath.row tableView:tableView]; break;
         case SectionAPIKeys: cell = [self apiKeyCellForRow:indexPath.row tableView:tableView]; break;
         case SectionGeneral: cell = [self generalCellForRow:indexPath.row tableView:tableView]; break;
+        case SectionApolloAI: cell = [self apolloAICellForTableView:tableView]; break;
         case SectionLinkPreviews: cell = [self linkPreviewsCellForTableView:tableView]; break;
         case SectionMedia: cell = [self mediaCellForRow:indexPath.row tableView:tableView]; break;
         case SectionSubreddits: cell = [self subredditCellForRow:indexPath.row tableView:tableView]; break;
@@ -1002,6 +1008,26 @@ typedef NS_ENUM(NSInteger, Tag) {
         }
         default: return [[UITableViewCell alloc] init];
     }
+}
+
+- (UITableViewCell *)apolloAICellForTableView:(UITableView *)tableView {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_ApolloAI"];
+    if (!cell) {
+        // Match the standard disclosure-row behavior used by API setup and
+        // other navigable settings: UIKit owns the chevron and the full row.
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:@"Cell_ApolloAI"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    cell.textLabel.text = @"Apollo AI Settings";
+    cell.detailTextLabel.text = sEnableAISummaries
+        ? @"On-device AI enabled"
+        : @"On-device summaries and generation settings";
+    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+    cell.detailTextLabel.numberOfLines = 0;
+    cell.detailTextLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    return cell;
 }
 
 - (UITableViewCell *)mediaCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
@@ -1471,8 +1497,27 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 #pragma mark - UITableViewDelegate
 
+- (void)openApolloAISettings {
+    ApolloLog(@"[ApolloAISettings] opening settings screen navigationController=%@",
+              self.navigationController ? @"yes" : @"no");
+    ApolloAISettingsViewController *vc =
+        [[ApolloAISettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    if (self.navigationController) {
+        [self.navigationController pushViewController:vc animated:YES];
+    } else {
+        UINavigationController *navigation =
+            [[UINavigationController alloc] initWithRootViewController:vc];
+        [self presentViewController:navigation animated:YES completion:nil];
+    }
+}
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+
+    if (indexPath.section == SectionApolloAI) {
+        [self openApolloAISettings];
+        return;
+    }
 
     if (indexPath.section == SectionLinkPreviews) {
         [self openLinkPreviewSettings];
@@ -1602,6 +1647,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         if (row == kAPIKeyRowTroubleshooting || row == kAPIKeyRowSetupGuide ||
             row == kAPIKeyRowWebSessionLogin || row == kAPIKeyRowWidgetSetupCode) return YES;
     }
+    if (indexPath.section == SectionApolloAI) return YES;
     if (indexPath.section == SectionLinkPreviews) return YES;
     if (indexPath.section == SectionMedia) {
         NSInteger row = ApolloMediaLogicalRow(indexPath.row);

@@ -81,6 +81,16 @@ static NSString *const UDKeyLibreTranslateAPIKey = @"LibreTranslateAPIKey";
 // Array<String> of 2-letter language codes to leave untranslated (detected source language).
 static NSString *const UDKeyTranslationSkipLanguages = @"TranslationSkipLanguages";
 
+// On-device AI summaries (Apple FoundationModels, iOS 26+). Off by default.
+static NSString *const UDKeyEnableAISummaries = @"EnableAISummaries";
+// Sub-toggles, only meaningful while EnableAISummaries is on. Both default ON, so
+// turning the master on keeps the original behaviour (post + comment summaries).
+static NSString *const UDKeyEnableAIPostSummaries = @"EnableAIPostSummaries";       // post / link / both
+static NSString *const UDKeyEnableAICommentSummaries = @"EnableAICommentSummaries"; // discussion
+// When on, summaries are generated only when the user taps the card (rather than
+// automatically on open). Off by default. Cached summaries still show instantly.
+static NSString *const UDKeyEnableTapToSummarize = @"EnableTapToSummarize";
+
 // Picture-in-Picture: floating in-app mini-player for comments-page videos.
 static NSString *const UDKeyPictureInPictureEnabled = @"PictureInPictureEnabled";       // master switch
 // 0 = All Videos, 1 = Unmuted Videos Only, 2 = All Videos & GIFs (ApolloPiPActivationMode).
