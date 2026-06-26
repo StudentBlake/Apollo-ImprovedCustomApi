@@ -63,6 +63,9 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloFlairColors.xm \
     $(SRC_DIR)/ApolloNativeActionMenus.xm \
     $(SRC_DIR)/ApolloShareAsImageGallery.xm \
+    $(SRC_DIR)/ApolloShareAsImageLink.xm \
+    $(SRC_DIR)/ApolloShareAsVideo.xm \
+    $(SRC_DIR)/ApolloShareAsImagePreviewFix.xm \
     $(SRC_DIR)/ApolloTranslation.xm \
     $(SRC_DIR)/ApolloAppleTranslation.swift \
     $(SRC_DIR)/ApolloVideoUnmute.xm \
