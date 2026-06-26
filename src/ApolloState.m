@@ -35,6 +35,7 @@ BOOL sModernSubredditDividers = YES;
 BOOL sSubredditListEnhancements = YES;
 BOOL sEnableFlairColors = NO;
 BOOL sEnableInlineImages = NO;
+BOOL sEnableChatMedia = NO;   // effective default YES via registerDefaults (UDKeyEnableChatMedia)
 BOOL sEnableAISummaries = NO;
 BOOL sEnableAIPostSummaries = YES;
 BOOL sEnableAICommentSummaries = YES;

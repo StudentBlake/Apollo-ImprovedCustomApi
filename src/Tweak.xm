@@ -1465,6 +1465,7 @@ static void initializeRandomSources() {
                                     UDKeyGiphyAPIKey: @"",
                                     UDKeyUseCustomOAuthSignIn: @YES,
                                     UDKeyEnableInlineImages: @YES,
+                                    UDKeyEnableChatMedia: @YES,
                                     UDKeyInlineImageAlignment: @(ApolloInlineImageAlignmentCenter),
                                     UDKeyAutoplayInlineGIFs: @(ApolloAutoplayInlineGIFModeDefault),
                                     UDKeyLinkPreviewBodyMode: @(ApolloLinkPreviewModeFull),
@@ -1532,6 +1533,7 @@ static void initializeRandomSources() {
     sUnmuteCommentsVideos = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyUnmuteCommentsVideos];
     sProxyImgurDDG = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProxyImgurDDG];
     sEnableInlineImages = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableInlineImages];
+    sEnableChatMedia = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableChatMedia];
     sEnableAISummaries = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableAISummaries];
     sEnableAIPostSummaries = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableAIPostSummaries];
     sEnableAICommentSummaries = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableAICommentSummaries];

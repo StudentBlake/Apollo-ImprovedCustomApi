@@ -540,8 +540,9 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionApolloAI: return 1;
         case SectionLinkPreviews: return 1;
         // Media base rows (the three "Rich Link Previews" rows moved out to their
-        // own SectionLinkPreviews), minus the two inline-dependent rows when off.
-        case SectionMedia: return 11 + (sEnableInlineImages ? 0 : -kApolloMediaInlineDependentRows);
+        // own SectionLinkPreviews) plus the chat inline-media toggle, minus the two
+        // inline-dependent rows when off.
+        case SectionMedia: return 12 + (sEnableInlineImages ? 0 : -kApolloMediaInlineDependentRows);
         case SectionSubreddits: return 10 - (sSubredditListEnhancements ? 0 : 1) - (sCommunityHighlights ? 0 : 1);
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
         case SectionAbout: return 5; // GitHub + Reddit + Thanks To + Export Logs + Version
@@ -1124,6 +1125,11 @@ typedef NS_ENUM(NSInteger, Tag) {
                                             label:@"Social Links in Profile"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeySocialLinksInProfile]
                                            action:@selector(socialLinksInProfileSwitchToggled:)];
+        case 11:
+            return [self switchCellWithIdentifier:@"Cell_Media_ChatMedia"
+                                            label:@"Inline Media in Chat"
+                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableChatMedia]
+                                           action:@selector(chatMediaSwitchToggled:)];
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -2169,6 +2175,14 @@ typedef NS_ENUM(NSInteger, Tag) {
     sSocialLinksInProfile = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sSocialLinksInProfile forKey:UDKeySocialLinksInProfile];
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloSocialLinksToggleChangedNotification object:nil];
+}
+
+- (void)chatMediaSwitchToggled:(UISwitch *)sender {
+    // Master toggle for chat media (inline images/GIFs/emoji/snoomoji + working media sends +
+    // tap-to-fullscreen). Open chats re-render their cells on next display/scroll, so no
+    // immediate-refresh notification is needed. Independent of Show User Profile Pictures.
+    sEnableChatMedia = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sEnableChatMedia forKey:UDKeyEnableChatMedia];
 }
 
 - (void)promptClearAllCachesFromSourceView:(UIView *)sourceView {

@@ -60,6 +60,10 @@ extern BOOL sEnableFlairColors;
 // fresh installs (registerDefaults). When NO, Apollo's native behavior (text
 // link + optional link card) is preserved. See ApolloInlineImages.xm.
 extern BOOL sEnableInlineImages;
+// Master toggle for chat media enhancements (inline images/GIFs/emoji/snoomoji in DM/chat
+// bubbles + working media sends + tap-to-fullscreen). Default ON via registerDefaults; OFF =
+// stock Apollo chat. Independent of sShowUserAvatars. See ApolloChatInlineImages/Composer.xm.
+extern BOOL sEnableChatMedia;
 
 // On-device AI summaries (Apple FoundationModels, iOS 26+). Off by default.
 // When on, a post summary is rendered at the bottom of the post and a comment
