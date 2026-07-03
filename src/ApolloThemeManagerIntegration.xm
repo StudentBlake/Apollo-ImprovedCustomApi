@@ -1,16 +1,11 @@
 // ApolloThemeManagerIntegration.xm — settings entry point for the v2 Theme
-// Manager. Injects a "Theme Manager" row into Apollo's Appearance screen
-// (section 0, row 1, right under "Themes") that opens
-// ApolloThemeManagerViewController, and keeps the custom-theme enabled flag
-// truthful when the user picks a stock Apollo theme in the native picker.
-//
-// The row is injected by saving Apollo's original UITableView data-source/
-// delegate IMPs and replacing them with shims that account for the extra row
-// (index-adjusting every indexPath-taking method), mirroring the proven v1
-// approach. Ported from ApolloThemeBuilder.xm and rewired to the v2 store/
-// runtime.
+// Manager. Repoints Apollo's native Appearance > Themes row to
+// ApolloThemeManagerViewController, while the hub pushes filtered views of
+// Apollo's native theme screen: the picker ("Apollo Themes"), the light/dark
+// options, and the comments theme, each showing only its own sections.
 
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloThemeTokens.h"
 #import "ApolloThemeStore.h"
@@ -19,38 +14,6 @@
 #import "ApolloCommon.h"
 
 static NSString * const kAppColorThemeKey = @"AppColorTheme";
-
-// ---------------------------------------------------------------------------
-// Injected row cell — matches the native rows' label font (Apollo's Text Size).
-// ---------------------------------------------------------------------------
-
-@interface ApolloRebornThemeManagerRowCell : UITableViewCell
-@property (nonatomic, strong) UIFont *apollo_targetFont;
-@end
-@implementation ApolloRebornThemeManagerRowCell
-- (UIFont *)apollo_sampleNativeFont {
-    UIView *v = self.superview;
-    while (v && ![v isKindOfClass:[UITableView class]]) v = v.superview;
-    if (![v isKindOfClass:[UITableView class]]) return nil;
-    for (UITableViewCell *c in ((UITableView *)v).visibleCells) {
-        if (c == self || ![c isKindOfClass:[UITableViewCell class]]) continue;
-        NSString *t = c.textLabel.text;
-        if (c.textLabel.font && t.length && ![t isEqualToString:@"Theme Manager"]) return c.textLabel.font;
-    }
-    return nil;
-}
-- (void)layoutSubviews {
-    if (self.apollo_targetFont && ![self.textLabel.font isEqual:self.apollo_targetFont])
-        self.textLabel.font = self.apollo_targetFont;
-    [super layoutSubviews];
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        typeof(self) s = weakSelf; if (!s) return;
-        UIFont *f = [s apollo_sampleNativeFont];
-        if (f && ![f isEqual:s.apollo_targetFont]) { s.apollo_targetFont = f; [s setNeedsLayout]; }
-    });
-}
-@end
 
 // ---------------------------------------------------------------------------
 // Saved original IMPs for the Appearance VC.
@@ -74,150 +37,204 @@ static NSInteger (*sIndentOrig)(id, SEL, UITableView *, NSIndexPath *);
 static UISwipeActionsConfiguration *(*sLeadingSwipeOrig)(id, SEL, UITableView *, NSIndexPath *);
 static UISwipeActionsConfiguration *(*sTrailingSwipeOrig)(id, SEL, UITableView *, NSIndexPath *);
 
-static inline BOOL IsManagerRow(NSIndexPath *ip) { return ip.section == 0 && ip.row == 1; }
-static inline NSIndexPath *Adjusted(NSIndexPath *ip) {
-    if (ip.section == 0 && ip.row > 1) return [NSIndexPath indexPathForRow:ip.row - 1 inSection:0];
-    return ip;
+static inline BOOL IsThemesRow(NSIndexPath *ip) { return ip.section == 0 && ip.row == 0; }
+
+// ---------------------------------------------------------------------------
+// Native theme screen modes.
+//
+// Apollo's SettingsThemeViewController is one screen holding the theme list
+// AND the appearance options (Comments Theme, Use System Light/Dark Mode,
+// Pure/PURER Black, plus the conditional automatic-dark-mode UI: sunset via
+// CLLocation, brightness threshold, schedule pickers). The hub splits it into
+// three views of the same instance: "Apollo Themes" shows only the theme list,
+// while "Light/Dark Mode" and "Comments Theme" show only the options sections.
+// Hidden sections keep their NATIVE indices (they just report 0 rows, nil
+// header/footer, ~0 heights) so Apollo's own insert/delete/reloadSections
+// bookkeeping stays consistent in every mode.
+// ---------------------------------------------------------------------------
+
+typedef NS_ENUM(NSInteger, ApolloNativeThemeScreenMode) {
+    ApolloNativeThemeScreenFull = 0,   // untouched native screen (non-hub entry)
+    ApolloNativeThemeScreenPicker,     // theme list only (section 0)
+    ApolloNativeThemeScreenOptions,    // everything but the list and comments
+    ApolloNativeThemeScreenComments,   // comments theme section only
+};
+
+static const void *kNativeScreenModeKey = &kNativeScreenModeKey;
+static ApolloNativeThemeScreenMode sPendingNativeScreenMode = ApolloNativeThemeScreenFull;
+
+static ApolloNativeThemeScreenMode NativeScreenModeFor(id vc) {
+    NSNumber *n = objc_getAssociatedObject(vc, kNativeScreenModeKey);
+    return n ? (ApolloNativeThemeScreenMode)n.integerValue : ApolloNativeThemeScreenFull;
 }
 
-static NSInteger Rows(id self, SEL _cmd, UITableView *tv, NSInteger section) {
-    NSInteger n = sRowsOrig ? sRowsOrig(self, _cmd, tv, section) : 0;
-    if (section == 0) n += 1;
-    return n;
+// Section classification is by header title because the options sections are
+// conditional (toggling "Use System" inserts/removes sections), so indices
+// aren't stable — but "Comments Theme" vs the rest is. The flag lets our own
+// titleForHeaderInSection hook pass the raw title through when we're the caller.
+static BOOL sRawHeaderTitleQuery = NO;
+
+static NSString *NativeScreenRawHeaderTitle(id vc, UITableView *tv, long long section) {
+    sRawHeaderTitleQuery = YES;
+    id title = ((id (*)(id, SEL, id, long long))objc_msgSend)(
+        vc, @selector(tableView:titleForHeaderInSection:), tv, section);
+    sRawHeaderTitleQuery = NO;
+    return [title isKindOfClass:NSString.class] ? title : nil;
 }
 
-static UITableViewCell *Cell(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) {
-        static NSString *reuse = @"ApolloRebornThemeManagerRow";
-        UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:reuse];
-        if (!cell) cell = [[ApolloRebornThemeManagerRowCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuse];
-        cell.textLabel.text = @"Theme Manager";
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        cell.accessibilityLabel = @"Theme Manager";
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightMedium];
-        UIImage *symbol = [[UIImage systemImageNamed:@"paintbrush.fill" withConfiguration:cfg]
-                           imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
-        UIColor *accent = UIColor.systemPurpleColor;
-        if (ApolloThemeRuntimeIsActive()) {
-            UIColor *c = ApolloThemeRuntimeColor(ApolloThemeTokenAccent);
-            if (c) accent = c;
+static BOOL NativeScreenSectionVisibleWithTitle(id vc, long long section, NSString *title) {
+    switch (NativeScreenModeFor(vc)) {
+        case ApolloNativeThemeScreenFull:
+            return YES;
+        case ApolloNativeThemeScreenPicker:
+            return section == 0;
+        case ApolloNativeThemeScreenOptions:
+        case ApolloNativeThemeScreenComments: {
+            // A section can legitimately have no header title, and
+            // NativeScreenRawHeaderTitle returns nil for those. Sending
+            // rangeOfString: to nil yields a zeroed NSRange (location 0, not
+            // NSNotFound), which would misclassify a titleless section — hiding
+            // it from Light/Dark and surfacing it under Comments. Treat a
+            // nil/empty title as explicitly not-a-comments-section so both modes
+            // agree.
+            BOOL isComments = title.length &&
+                [title rangeOfString:@"comment" options:NSCaseInsensitiveSearch].location != NSNotFound;
+            BOOL wantComments = (NativeScreenModeFor(vc) == ApolloNativeThemeScreenComments);
+            return section != 0 && (isComments == wantComments);
         }
-        CGFloat side = 29;
-        UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat preferredFormat];
-        fmt.opaque = NO;
-        cell.imageView.image = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side) format:fmt]
-            imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-                [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, side, side) cornerRadius:6.5] addClip];
-                [accent setFill];
-                UIRectFill(CGRectMake(0, 0, side, side));
-                CGSize ss = symbol.size;
-                [symbol drawAtPoint:CGPointMake((side - ss.width) / 2, (side - ss.height) / 2)];
-            }];
-        return cell;
     }
-    return sCellOrig ? sCellOrig(self, _cmd, tv, Adjusted(ip))
-                     : [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    return YES;
 }
 
-static CGFloat Height(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    NSIndexPath *ref = IsManagerRow(ip) ? [NSIndexPath indexPathForRow:0 inSection:0] : Adjusted(ip);
-    return sHeightOrig ? sHeightOrig(self, _cmd, tv, ref) : UITableViewAutomaticDimension;
-}
-static CGFloat EstHeight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    NSIndexPath *ref = IsManagerRow(ip) ? [NSIndexPath indexPathForRow:0 inSection:0] : Adjusted(ip);
-    return sEstHeightOrig ? sEstHeightOrig(self, _cmd, tv, ref) : 52.0;
+static BOOL NativeScreenSectionVisible(id vc, UITableView *tv, long long section) {
+    if (NativeScreenModeFor(vc) == ApolloNativeThemeScreenFull) return YES; // skip the title query
+    return NativeScreenSectionVisibleWithTitle(vc, section, NativeScreenRawHeaderTitle(vc, tv, section));
 }
 
-static void Select(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) {
-        [tv deselectRowAtIndexPath:ip animated:YES];
-        ApolloThemeManagerViewController *vc = [[ApolloThemeManagerViewController alloc] init];
-        [((UIViewController *)self).navigationController pushViewController:vc animated:YES];
-        return;
-    }
-    if (sSelectOrig) sSelectOrig(self, _cmd, tv, Adjusted(ip));
-}
-
-// Scrape a themed native sibling's card chrome onto the injected row so it
-// matches the "Themes" row (the custom row class isn't touched by Apollo's
-// theming or our cell-background hooks).
-static BOOL ApplyNativeChrome(UITableView *tv, UITableViewCell *target) {
-    if (!tv || !target) return NO;
-    for (UITableViewCell *c in tv.visibleCells) {
-        if (c == target || [c isKindOfClass:[ApolloRebornThemeManagerRowCell class]]) continue;
-        UIColor *bg = c.backgroundColor;
-        if (!bg || CGColorGetAlpha(bg.CGColor) == 0) bg = c.backgroundView.backgroundColor;
-        if (!bg || CGColorGetAlpha(bg.CGColor) == 0) bg = c.contentView.backgroundColor;
-        if (!bg || CGColorGetAlpha(bg.CGColor) == 0) continue;
-        target.backgroundColor = bg;
-        target.selectionStyle = c.selectionStyle;
-        UIColor *sel = c.selectedBackgroundView.backgroundColor;
-        if (sel && CGColorGetAlpha(sel.CGColor) > 0) {
-            UIView *v = [[UIView alloc] init]; v.backgroundColor = sel; target.selectedBackgroundView = v;
-        } else {
-            target.selectedBackgroundView = nil;
+static BOOL OpenNativeThemeScreenFromHub(UIViewController *hub,
+                                         ApolloNativeThemeScreenMode mode,
+                                         NSString *title) {
+    if (!sSelectOrig || !hub.navigationController) return NO;
+    Class appearanceClass = objc_getClass("_TtC6Apollo32SettingsAppearanceViewController");
+    if (!appearanceClass) return NO;
+    for (UIViewController *vc in hub.navigationController.viewControllers.reverseObjectEnumerator) {
+        if (![vc isKindOfClass:appearanceClass]) continue;
+        UITableView *tableView = nil;
+        if ([vc respondsToSelector:@selector(tableView)]) {
+            tableView = ((UITableView *(*)(id, SEL))objc_msgSend)(vc, @selector(tableView));
         }
+        if (!tableView) return NO;
+        // Consumed by the pushed VC's viewDidLoad, so the table is filtered
+        // from its very first layout (no flash of the full screen mid-push).
+        sPendingNativeScreenMode = mode;
+        NSIndexPath *themes = [NSIndexPath indexPathForRow:0 inSection:0];
+        sSelectOrig(vc, @selector(tableView:didSelectRowAtIndexPath:), tableView, themes);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            sPendingNativeScreenMode = ApolloNativeThemeScreenFull; // if the push never made a VC
+            UIViewController *top = hub.navigationController.topViewController;
+            if (!top || top == hub) return;
+            top.title = title;
+            // Repair path: if viewDidLoad somehow ran without consuming the
+            // pending mode, stamp it now and refilter.
+            if (NativeScreenModeFor(top) != mode &&
+                [top isKindOfClass:objc_getClass("_TtC6Apollo27SettingsThemeViewController")]) {
+                objc_setAssociatedObject(top, kNativeScreenModeKey, @(mode), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                if ([top respondsToSelector:@selector(tableView)]) {
+                    UITableView *tv = ((UITableView *(*)(id, SEL))objc_msgSend)(top, @selector(tableView));
+                    [tv reloadData];
+                }
+            }
+        });
         return YES;
     }
     return NO;
 }
 
-static void WillDisplay(id self, SEL _cmd, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
-    if (!IsManagerRow(ip)) {
-        if (sWillDisplayOrig) sWillDisplayOrig(self, _cmd, tv, cell, Adjusted(ip));
+extern "C" BOOL ApolloThemeOpenNativeThemePickerFromHub(UIViewController *hub) {
+    return OpenNativeThemeScreenFromHub(hub, ApolloNativeThemeScreenPicker, @"Apollo Themes");
+}
+extern "C" BOOL ApolloThemeOpenNativeLightDarkFromHub(UIViewController *hub) {
+    return OpenNativeThemeScreenFromHub(hub, ApolloNativeThemeScreenOptions, @"Light/Dark Mode");
+}
+extern "C" BOOL ApolloThemeOpenNativeCommentsThemeFromHub(UIViewController *hub) {
+    return OpenNativeThemeScreenFromHub(hub, ApolloNativeThemeScreenComments, @"Comments Theme");
+}
+
+static NSInteger Rows(id self, SEL _cmd, UITableView *tv, NSInteger section) {
+    return sRowsOrig ? sRowsOrig(self, _cmd, tv, section) : 0;
+}
+
+static UITableViewCell *Cell(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    UITableViewCell *cell = sCellOrig ? sCellOrig(self, _cmd, tv, ip)
+                                      : [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    if (IsThemesRow(ip)) {
+        cell.textLabel.text = @"Theme Manager";
+    }
+    return cell;
+}
+
+static CGFloat Height(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    return sHeightOrig ? sHeightOrig(self, _cmd, tv, ip) : UITableViewAutomaticDimension;
+}
+static CGFloat EstHeight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    return sEstHeightOrig ? sEstHeightOrig(self, _cmd, tv, ip) : 52.0;
+}
+
+static void Select(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    if (IsThemesRow(ip)) {
+        [tv deselectRowAtIndexPath:ip animated:YES];
+        ApolloThemeManagerViewController *vc = [[ApolloThemeManagerViewController alloc] init];
+        [((UIViewController *)self).navigationController pushViewController:vc animated:YES];
         return;
     }
-    if (!ApplyNativeChrome(tv, cell)) {
-        __weak UITableViewCell *wc = cell; __weak UITableView *wt = tv;
-        dispatch_async(dispatch_get_main_queue(), ^{ if (wc && wt) ApplyNativeChrome(wt, wc); });
-    }
+    if (sSelectOrig) sSelectOrig(self, _cmd, tv, ip);
+}
+
+static void WillDisplay(id self, SEL _cmd, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
+    if (sWillDisplayOrig) sWillDisplayOrig(self, _cmd, tv, cell, ip);
 }
 
 static void DidEndDisplaying(id self, SEL _cmd, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return;
-    if (sDidEndDisplayingOrig) sDidEndDisplayingOrig(self, _cmd, tv, cell, Adjusted(ip));
+    if (sDidEndDisplayingOrig) sDidEndDisplayingOrig(self, _cmd, tv, cell, ip);
 }
 static BOOL ShouldHighlight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return YES;
-    return sShouldHighlightOrig ? sShouldHighlightOrig(self, _cmd, tv, Adjusted(ip)) : YES;
+    if (IsThemesRow(ip)) return YES;
+    return sShouldHighlightOrig ? sShouldHighlightOrig(self, _cmd, tv, ip) : YES;
 }
 static NSIndexPath *WillSelect(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return ip;
+    if (IsThemesRow(ip)) return ip;
     if (!sWillSelectOrig) return ip;
-    NSIndexPath *r = sWillSelectOrig(self, _cmd, tv, Adjusted(ip));
+    NSIndexPath *r = sWillSelectOrig(self, _cmd, tv, ip);
     return r ? ip : nil;
 }
 static void DidHighlight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return;
-    if (sDidHighlightOrig) sDidHighlightOrig(self, _cmd, tv, Adjusted(ip));
+    if (sDidHighlightOrig) sDidHighlightOrig(self, _cmd, tv, ip);
 }
 static void DidUnhighlight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return;
-    if (sDidUnhighlightOrig) sDidUnhighlightOrig(self, _cmd, tv, Adjusted(ip));
+    if (sDidUnhighlightOrig) sDidUnhighlightOrig(self, _cmd, tv, ip);
 }
 static BOOL CanEdit(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return NO;
-    return sCanEditOrig ? sCanEditOrig(self, _cmd, tv, Adjusted(ip)) : NO;
+    if (IsThemesRow(ip)) return NO;
+    return sCanEditOrig ? sCanEditOrig(self, _cmd, tv, ip) : NO;
 }
 static BOOL CanMove(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return NO;
-    return sCanMoveOrig ? sCanMoveOrig(self, _cmd, tv, Adjusted(ip)) : NO;
+    if (IsThemesRow(ip)) return NO;
+    return sCanMoveOrig ? sCanMoveOrig(self, _cmd, tv, ip) : NO;
 }
 static NSInteger EditingStyle(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return UITableViewCellEditingStyleNone;
-    return sEditingStyleOrig ? sEditingStyleOrig(self, _cmd, tv, Adjusted(ip)) : UITableViewCellEditingStyleNone;
+    if (IsThemesRow(ip)) return UITableViewCellEditingStyleNone;
+    return sEditingStyleOrig ? sEditingStyleOrig(self, _cmd, tv, ip) : UITableViewCellEditingStyleNone;
 }
 static NSInteger Indent(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return 0;
-    return sIndentOrig ? sIndentOrig(self, _cmd, tv, Adjusted(ip)) : 0;
+    return sIndentOrig ? sIndentOrig(self, _cmd, tv, ip) : 0;
 }
 static UISwipeActionsConfiguration *LeadingSwipe(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return nil;
-    return sLeadingSwipeOrig ? sLeadingSwipeOrig(self, _cmd, tv, Adjusted(ip)) : nil;
+    if (IsThemesRow(ip)) return nil;
+    return sLeadingSwipeOrig ? sLeadingSwipeOrig(self, _cmd, tv, ip) : nil;
 }
 static UISwipeActionsConfiguration *TrailingSwipe(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
-    if (IsManagerRow(ip)) return nil;
-    return sTrailingSwipeOrig ? sTrailingSwipeOrig(self, _cmd, tv, Adjusted(ip)) : nil;
+    if (IsThemesRow(ip)) return nil;
+    return sTrailingSwipeOrig ? sTrailingSwipeOrig(self, _cmd, tv, ip) : nil;
 }
 
 #define SAVE_AND_REPLACE(sel, var, fn, sig) do { \
@@ -266,7 +283,7 @@ static void InstallAppearanceHooks(void) {
         NSString *donor = [store runtimeDonorTheme];
         if (![(NSString *)value isEqualToString:donor] && store.customThemeEnabled) {
             ApolloLog(@"ThemeManager: user picked %@ — disabling custom theme", value);
-            store.customThemeEnabled = NO;
+            [store selectApolloTheme];
             store.previousApolloTheme = nil; // user explicitly chose this; drop stale memory
             ApolloThemeRuntimeReload();
             ApolloThemeRuntimeInvalidate();
@@ -308,10 +325,49 @@ static UIImage *CustomPickerSwatch(void) {
 
 %hook _TtC6Apollo27SettingsThemeViewController
 
+- (void)viewDidLoad {
+    %orig;
+    if (sPendingNativeScreenMode != ApolloNativeThemeScreenFull) {
+        objc_setAssociatedObject(self, kNativeScreenModeKey,
+                                 @(sPendingNativeScreenMode), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        sPendingNativeScreenMode = ApolloNativeThemeScreenFull;
+    }
+}
+
 - (long long)tableView:(UITableView *)tv numberOfRowsInSection:(long long)section {
+    if (!NativeScreenSectionVisible(self, tv, section)) return 0;
     long long n = %orig;
     if (section == 0) n += 1; // injected "Custom" row
     return n;
+}
+
+- (id)tableView:(UITableView *)tv titleForHeaderInSection:(long long)section {
+    id title = %orig;
+    if (sRawHeaderTitleQuery) return title; // classification query — unfiltered
+    NSString *t = [title isKindOfClass:NSString.class] ? title : nil;
+    if (!NativeScreenSectionVisibleWithTitle(self, section, t)) return nil;
+    return title;
+}
+
+- (id)tableView:(UITableView *)tv viewForFooterInSection:(long long)section {
+    if (!NativeScreenSectionVisible(self, tv, section)) return nil;
+    return %orig;
+}
+
+// The class relies on UIKit's defaults for header/footer heights, which keep
+// ~35pt of grouped spacing even for a 0-row nil-title section. These %new
+// delegate methods collapse hidden sections to nothing and defer to automatic
+// sizing everywhere else (identical to the methods not existing).
+%new
+- (double)tableView:(UITableView *)tv heightForHeaderInSection:(long long)section {
+    if (!NativeScreenSectionVisible(self, tv, section)) return 0.001;
+    return UITableViewAutomaticDimension;
+}
+
+%new
+- (double)tableView:(UITableView *)tv heightForFooterInSection:(long long)section {
+    if (!NativeScreenSectionVisible(self, tv, section)) return 0.001;
+    return UITableViewAutomaticDimension;
 }
 
 - (id)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -321,8 +377,14 @@ static UIImage *CustomPickerSwatch(void) {
         UITableViewCell *cell = %orig(tv, [NSIndexPath indexPathForRow:0 inSection:0]);
         cell.accessoryView = nil;
         cell.textLabel.text = @"Custom";
-        if ([cell.detailTextLabel respondsToSelector:@selector(setText:)])
-            cell.detailTextLabel.text = @"Your own colours, built in Theme Manager.";
+        if ([cell.detailTextLabel respondsToSelector:@selector(setText:)]) {
+            ApolloThemeStore *store = [ApolloThemeStore shared];
+            NSDictionary *active = [store activeTheme];
+            NSString *name = [active[@"name"] isKindOfClass:NSString.class] ? active[@"name"] : nil;
+            cell.detailTextLabel.text = (enabled && name.length)
+                ? [NSString stringWithFormat:@"%@ active from Theme Manager", name]
+                : @"Selected from Theme Manager";
+        }
         cell.imageView.image = CustomPickerSwatch();
         cell.accessoryType = enabled ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
         cell.accessibilityLabel = @"Custom";
