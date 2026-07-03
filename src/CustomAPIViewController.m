@@ -553,10 +553,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         // the mode is off.
         case SectionAPIKeys: return kAPIKeyRowWidgetSetupCode + (sWebJSONEnabled ? 1 : 0);
         // General base rows + the search-in-place (effectiveRow 11),
-        // follow-live-comments (effectiveRow 12) and iPad-tab-bar-bottom
-        // (effectiveRow 13) toggles, minus the conditional "Tap to Show Deleted
-        // Comments" row.
-        case SectionGeneral: return sShowDeletedComments ? 14 : 13;
+        // follow-live-comments (effectiveRow 12), iPad-tab-bar-bottom
+        // (effectiveRow 13) and icon-row-magnifier (effectiveRow 14) toggles,
+        // minus the conditional "Tap to Show Deleted Comments" row.
+        case SectionGeneral: return sShowDeletedComments ? 15 : 14;
         case SectionApolloAI: return 1;
         case SectionLinkPreviews: return 1;
         // Media base rows (the three "Rich Link Previews" rows moved out to their
@@ -1049,6 +1049,12 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.enabled = supported;
             return cell;
         }
+        case 14:
+            return [self switchCellWithIdentifier:@"Cell_Gen_IconRowMagnifier"
+                                            label:@"Magnify Info Row on Hold"
+                                           detail:@"Press and hold a post's info row (score, comments, time…) to magnify the icons and slide to the one you want."
+                                               on:[defaults boolForKey:UDKeyIconRowMagnifier]
+                                           action:@selector(iconRowMagnifierSwitchToggled:)];
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -2232,6 +2238,11 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (void)keepSearchBarInPlaceSwitchToggled:(UISwitch *)sender {
     sKeepSearchBarInPlace = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sKeepSearchBarInPlace forKey:UDKeyKeepSearchBarInPlace];
+}
+
+- (void)iconRowMagnifierSwitchToggled:(UISwitch *)sender {
+    sIconRowMagnifier = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sIconRowMagnifier forKey:UDKeyIconRowMagnifier];
 }
 
 - (void)liveCommentsFollowSwitchToggled:(UISwitch *)sender {
