@@ -13,6 +13,7 @@
 #import "ApolloDeletedCommentsData.h"
 #import "ApolloImageUploadHost.h"
 #import "ApolloImgChestUpload.h"
+#import "ApolloMediaAutoplay.h"
 #import "ApolloNotificationBackend.h"
 #import "ApolloUsageHeartbeat.h"
 #import "ApolloPushNotifications.h"
@@ -1563,6 +1564,7 @@ static void initializeRandomSources() {
                                     UDKeyEnableChatMedia: @YES,
                                     UDKeyInlineImageAlignment: @(ApolloInlineImageAlignmentCenter),
                                     UDKeyAutoplayInlineGIFs: @(ApolloAutoplayInlineGIFModeDefault),
+                                    UDKeyInlineMediaSizePercent: @100,
                                     UDKeyLinkPreviewBodyMode: @(ApolloLinkPreviewModeFull),
                                     UDKeyLinkPreviewCommentsMode: @(ApolloLinkPreviewModeFull),
                                     UDKeyLinkPreviewCardColor: @(ApolloLinkPreviewCardColorNeutral),
@@ -1667,9 +1669,17 @@ static void initializeRandomSources() {
         [standardDefaults setInteger:sInlineImageAlignment forKey:UDKeyInlineImageAlignment];
     }
     sAutoplayInlineGIFMode = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyAutoplayInlineGIFs];
-    if (sAutoplayInlineGIFMode < ApolloAutoplayInlineGIFModeDefault || sAutoplayInlineGIFMode > ApolloAutoplayInlineGIFModeAlways) {
-        sAutoplayInlineGIFMode = ApolloAutoplayInlineGIFModeDefault;
+    if (sAutoplayInlineGIFMode < ApolloAutoplayInlineGIFModeNever || sAutoplayInlineGIFMode > ApolloAutoplayInlineGIFModeTapToPlay) {
+        // Legacy "Default (Follow Apollo)" (0) / invalid values: resolve
+        // Apollo's native Autoplay GIFs/Videos setting once so behavior is
+        // unchanged, then own the setting explicitly from here on.
+        sAutoplayInlineGIFMode = ApolloResolveLegacyDefaultAutoplayGIFMode();
         [standardDefaults setInteger:sAutoplayInlineGIFMode forKey:UDKeyAutoplayInlineGIFs];
+    }
+    sInlineMediaSizePercent = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyInlineMediaSizePercent];
+    if (sInlineMediaSizePercent != 50 && sInlineMediaSizePercent != 75 && sInlineMediaSizePercent != 100) {
+        sInlineMediaSizePercent = 100;
+        [standardDefaults setInteger:sInlineMediaSizePercent forKey:UDKeyInlineMediaSizePercent];
     }
     sLinkPreviewBodyMode = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyLinkPreviewBodyMode];
     if (sLinkPreviewBodyMode < ApolloLinkPreviewModeOff || sLinkPreviewBodyMode > ApolloLinkPreviewModeFull) {

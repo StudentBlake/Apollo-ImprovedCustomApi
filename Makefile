@@ -140,6 +140,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloAISettingsViewController.m \
     $(SRC_DIR)/ApolloDeletedCommentsSettingsViewController.m \
     $(SRC_DIR)/ApolloLinkPreviewSettingsViewController.m \
+    $(SRC_DIR)/InlineMediaSettingsViewController.m \
     $(SRC_DIR)/ApolloOpenInAppViewController.m \
     $(SRC_DIR)/ApolloHideNativeOpenInAppRows.xm \
     $(SRC_DIR)/TranslationSettingsViewController.m \

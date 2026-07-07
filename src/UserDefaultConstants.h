@@ -121,10 +121,15 @@ static NSString *const UDKeyEnableChatMedia = @"EnableChatMedia";
 // Horizontal alignment for inline media that is narrower than the row (e.g. tall portrait images).
 // 0 = Center (default), 1 = Left, 2 = Right.
 static NSString *const UDKeyInlineImageAlignment = @"InlineImageAlignment";
-// Autoplay for inline GIF/animated media previews. 0 = Default (follow Apollo's
-// native "Autoplay GIFs/Videos"), 1 = Never, 2 = WiFi Only, 3 = Always. Only
-// meaningful when Inline Media Previews (UDKeyEnableInlineImages) is on.
+// Autoplay for inline GIF/animated media previews. 0 = legacy Default (follow
+// Apollo's native "Autoplay GIFs/Videos", migrated at load), 1 = Never,
+// 2 = WiFi Only, 3 = Always, 4 = Tap to Play (static cover + play button;
+// tap toggles play/pause inline). Only meaningful when Inline Media Previews
+// (UDKeyEnableInlineImages) is on.
 static NSString *const UDKeyAutoplayInlineGIFs = @"AutoplayInlineGIFs";
+// Display width of inline media (images/GIFs) in comments and selftext as a
+// percentage of the row width: 50, 75, or 100 (default).
+static NSString *const UDKeyInlineMediaSizePercent = @"InlineMediaSizePercent";
 
 // Bulk translation feature
 static NSString *const UDKeyEnableBulkTranslation = @"EnableBulkTranslation";
@@ -305,3 +310,6 @@ static NSString *const UDKeyLinkPreviewCardColor = @"LinkPreviewCardColor";
 // hex paints the whole card that exact color, with auto-contrasted text.
 static NSString *const UDKeyLinkPreviewCardColorHex = @"LinkPreviewCardColorHex";
 static NSString *const ApolloLinkPreviewModeDidChangeNotification = @"ApolloLinkPreviewModeDidChangeNotification";
+// Posted by the Inline Media settings screen when size/alignment changes so
+// visible comments re-measure their inline media immediately.
+static NSString *const ApolloInlineMediaLayoutDidChangeNotification = @"ApolloInlineMediaLayoutDidChangeNotification";

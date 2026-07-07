@@ -12,6 +12,7 @@
 #import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
 #import "Tweak.h"
+#import "UserDefaultConstants.h"
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -154,6 +155,7 @@ static char kApolloInlineGIFCoverImageKey;     // UIImage — first-frame cover 
 static char kApolloInlineGIFUserForcedPlayKey; // NSNumber BOOL — user tapped play on paused GIF
 static char kApolloInlineGIFPendingPolicyBlocksKey; // NSMutableArray<dispatch_block_t>
 static char kApolloInlineGIFGenerationKey;     // NSNumber — bumped on clear/reuse to invalidate async GIF policy blocks
+static char kApolloInlineGIFReloadInFlightKey; // NSNumber BOOL — internal URL/image reset in progress (settings-refresh reload, pause cover swap): suppress ClearState from the reset round trip
 static char kApolloStackedCardSyncerKey;       // ApolloStackedCardSyncer — keeps the multi-image card peeking behind imageNode
 static char kApolloImageChestItemsKey;         // NSArray<NSDictionary *> direct ImageChest CDN image entries for album pager
 
@@ -171,6 +173,7 @@ static inline BOOL ApolloImageNodeHasInlineHost(id node) {
 
 static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imageNode, UIImage *cover, NSUInteger retryIndex);
 static void ApolloStartInlineGIFPlayback(ASNetworkImageNode *imageNode);
+static void ApolloStopInlineGIFPlayback(ASNetworkImageNode *imageNode);
 static BOOL ApolloResumeInlineGIFPlaybackIfPossible(ASNetworkImageNode *imageNode);
 static void ApolloClearInlineGIFNodeState(ASNetworkImageNode *node);
 static NSUInteger ApolloInlineGIFGenerationForNode(id node);
@@ -1682,10 +1685,18 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
 }
 
 - (void)imageNodeTapped:(id)imageNode {
+    // Inline tap-to-play only when the play-button overlay is showing
+    // (Tap to Play mode, or WiFi Only while blocked). Never mode has no
+    // overlay — the tap falls through to the media viewer like any image.
     if ([objc_getAssociatedObject(imageNode, &kApolloInlineAnimatedGIFKey) boolValue] &&
         (objc_getAssociatedObject(imageNode, &kApolloPlayOverlayViewKey) ||
-         !ApolloShouldAutoplayInlineGIFCached())) {
-        ApolloStartInlineGIFPlayback((ASNetworkImageNode *)imageNode);
+         (!ApolloShouldAutoplayInlineGIFCached() && ApolloPausedInlineGIFWantsPlayOverlay()))) {
+        if ([objc_getAssociatedObject(imageNode, &kApolloInlineGIFUserForcedPlayKey) boolValue]) {
+            // Tap while force-playing — pause back to the cover + play button.
+            ApolloStopInlineGIFPlayback((ASNetworkImageNode *)imageNode);
+        } else {
+            ApolloStartInlineGIFPlayback((ASNetworkImageNode *)imageNode);
+        }
         return;
     }
 
@@ -1880,6 +1891,103 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
 
 @end
 
+// MARK: - Native inline animated media gating
+//
+// Apollo renders some comment/selftext animated media itself (giphy-picker
+// tokens, native ![gif](...) embeds, animated snoomoji) as MarkdownNode
+// children the tweak doesn't create. Those nodes were never marked as inline
+// GIFs, so the FLAnimatedImageView hooks let them animate regardless of the
+// Autoplay Inline GIFs mode. Flag any un-hosted animated node living under a
+// MarkdownNode and gate it in place (stop/start only — no cover/overlay/URL
+// reload machinery). Feed media (RichMediaNode) has no MarkdownNode ancestor
+// and stays governed by Apollo's native autoplay setting.
+static BOOL ApolloNodeDescendsFromMarkdownNode(ASDisplayNode *node) {
+    ASDisplayNode *cursor = node.supernode;
+    int depth = 0;
+    while (cursor && depth < 12) {
+        if ([NSStringFromClass([cursor class]) containsString:@"MarkdownNode"]) return YES;
+        cursor = cursor.supernode;
+        depth++;
+    }
+    return NO;
+}
+
+static void ApolloActivateNativeInlineGIFGate(ASDisplayNode *node) {
+    ApolloFlagNativeInlineGIFNode(node);
+    ApolloRegisterInlineGIFNode(node);
+    if (!ApolloApplyNativeInlineGIFAutoplayGate(node) &&
+        [node respondsToSelector:@selector(onDidLoad:)]) {
+        // Node not loaded yet — gate the instant its view is created so the
+        // animation never gets a free first run.
+        __weak ASDisplayNode *weakNode = node;
+        [node onDidLoad:^(__kindof ASDisplayNode *loaded) {
+            ASDisplayNode *strong = weakNode;
+            if (!strong || (id)loaded != (id)strong) return;
+            ApolloApplyNativeInlineGIFAutoplayGate(strong);
+        }];
+    }
+    ApolloLog(@"[AutoplayGIF] native inline GIF gated node=%p class=%@",
+              node, NSStringFromClass([node class]));
+}
+
+// Mark a hosted inline GIF node's backing view the moment it exists — via
+// onDidLoad for prefetched nodes — so the FLAnimatedImageView hooks gate
+// playback from the very first frame. Marking used to wait for the playback
+// policy to run with a downloaded cover, so a freshly loaded GIF animated for
+// as long as its cover fetch took (seconds on slow hosts; indefinitely when
+// the fetch failed) even with autoplay off.
+static void ApolloMarkHostedInlineGIFViewWhenLoaded(ASNetworkImageNode *node, NSUInteger generation) {
+    if (!node) return;
+    if ([node respondsToSelector:@selector(isNodeLoaded)] && [node isNodeLoaded]) {
+        UIView *view = [node view];
+        if (view) {
+            ApolloMarkViewAsInlineGIF(view);
+            UIView *animView = ApolloFindFLAnimatedImageViewInView(view);
+            if (animView) ApolloApplyFLAnimatedImageViewAutoplayGate(animView);
+        }
+        return;
+    }
+    if (![node respondsToSelector:@selector(onDidLoad:)]) return;
+    __weak ASNetworkImageNode *weakNode = node;
+    [node onDidLoad:^(__kindof ASDisplayNode *loaded) {
+        ASNetworkImageNode *strong = weakNode;
+        if (!strong || (id)loaded != (id)strong) return;
+        if (!ApolloInlineGIFGenerationMatches(strong, generation)) return;
+        if (![objc_getAssociatedObject(strong, &kApolloInlineAnimatedGIFKey) boolValue]) return;
+        UIView *view = [strong view];
+        if (!view) return;
+        ApolloMarkViewAsInlineGIF(view);
+        UIView *animView = ApolloFindFLAnimatedImageViewInView(view);
+        if (animView) ApolloApplyFLAnimatedImageViewAutoplayGate(animView);
+        // Re-run the playback policy now that the view exists so the static
+        // cover and (mode-dependent) play overlay land immediately.
+        UIImage *storedCover = objc_getAssociatedObject(strong, &kApolloInlineGIFCoverImageKey);
+        ApolloApplyInlineGIFPlaybackPolicyWithCover(strong, storedCover, 0);
+    }];
+}
+
+static void ApolloGateNativeInlineAnimatedImageIfNeeded(ASDisplayNode *node) {
+    if (!node) return;
+    __weak ASDisplayNode *weakNode = node;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ASDisplayNode *strong = weakNode;
+        if (!strong || ApolloImageNodeHasInlineHost(strong)) return;
+        if (ApolloNodeDescendsFromMarkdownNode(strong)) {
+            ApolloActivateNativeInlineGIFGate(strong);
+            return;
+        }
+        // The node may not be attached to its supernode yet (async decode) —
+        // check once more after attachment settles.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ASDisplayNode *retryNode = weakNode;
+            if (!retryNode || ApolloImageNodeHasInlineHost(retryNode)) return;
+            if (!ApolloNodeDescendsFromMarkdownNode(retryNode)) return;
+            ApolloActivateNativeInlineGIFGate(retryNode);
+        });
+    });
+}
+
 // MARK: - %hook ASImageNode (animated image — GIF support)
 //
 // ASNetworkImageNode bypasses the public setAnimatedImage: setter and calls
@@ -1892,6 +2000,9 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
 
 - (void)_locked_setAnimatedImage:(id)animatedImage {
     BOOL hosted = ApolloImageNodeHasInlineHost(self);
+    if (!hosted && animatedImage) {
+        ApolloGateNativeInlineAnimatedImageIfNeeded((ASDisplayNode *)self);
+    }
     if (hosted && animatedImage && !ApolloInlineGIFAnimatedImageArgumentIsUsable(animatedImage)) {
         ApolloLog(@"[InlineImages] _locked_setAnimatedImage rejecting unusable animatedImage node=%p", self);
         ApolloClearInlineGIFNodeState((ASNetworkImageNode *)self);
@@ -1901,6 +2012,11 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
     if (!hosted) return;
 
     if (!animatedImage) {
+        if ([objc_getAssociatedObject(self, &kApolloInlineGIFReloadInFlightKey) boolValue]) {
+            // Settings-refresh reload resets URL/image before re-setting them —
+            // keep the node's inline-GIF state so the re-download re-gates.
+            return;
+        }
         __weak ASImageNode *weakSelf = self;
         NSUInteger generation = ApolloInlineGIFGenerationForNode(self);
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1938,15 +2054,13 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
         objc_setAssociatedObject(strong, &kApolloInlineGIFAnimatedImageKey, anim, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloRegisterInlineGIFNode(strong);
 
+        ApolloMarkHostedInlineGIFViewWhenLoaded((ASNetworkImageNode *)strong, generation);
         if (!ApolloShouldAutoplayInlineGIFCached()) {
             ASDisplayNode *displayNode = (ASDisplayNode *)strong;
             if ([displayNode respondsToSelector:@selector(isNodeLoaded)] && [displayNode isNodeLoaded]) {
                 UIView *view = [displayNode view];
-                if (view) {
-                    ApolloMarkViewAsInlineGIF(view);
-                    if (cover && cover.size.width > 0) {
-                        ApolloInstallPlayOverlayOnView(view, displayNode);
-                    }
+                if (view && cover && cover.size.width > 0 && ApolloPausedInlineGIFWantsPlayOverlay()) {
+                    ApolloInstallPlayOverlayOnView(view, displayNode);
                 }
             }
         }
@@ -1997,7 +2111,8 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
 %hook ASNetworkImageNode
 
 - (void)setURL:(NSURL *)URL {
-    if (ApolloImageNodeHasInlineHost(self)) {
+    if (ApolloImageNodeHasInlineHost(self) &&
+        ![objc_getAssociatedObject(self, &kApolloInlineGIFReloadInFlightKey) boolValue]) {
         NSURL *previous = [self respondsToSelector:@selector(URL)] ? [self URL] : nil;
         if ((previous && URL && ![previous isEqual:URL]) || (previous && !URL)) {
             ApolloLog(@"[AutoplayGIF] clearing GIF state on URL change node=%p", self);
@@ -2321,21 +2436,29 @@ static void ApolloClearInlineGIFNodeState(ASNetworkImageNode *node) {
 static BOOL ApolloInlineGIFImageNodeIsLiveForRefresh(ASNetworkImageNode *node) {
     if (!ApolloInlineGIFNodeIsRegistryEligible(node)) {
         if (node) ApolloUnregisterInlineGIFNode(node);
+        ApolloLog(@"[AutoplayGIF] live-check node=%p ineligible", node);
         return NO;
     }
     if (!node) return NO;
     if (![objc_getAssociatedObject(node, &kApolloInlineAnimatedGIFKey) boolValue]) {
         ApolloUnregisterInlineGIFNode(node);
+        ApolloLog(@"[AutoplayGIF] live-check node=%p no-anim-flag", node);
         return NO;
     }
     @try {
-        if (![node respondsToSelector:@selector(isNodeLoaded)] || ![node isNodeLoaded]) return NO;
-        if (!node.supernode) {
-            ApolloUnregisterInlineGIFNode(node);
+        if (![node respondsToSelector:@selector(isNodeLoaded)] || ![node isNodeLoaded]) {
+            ApolloLog(@"[AutoplayGIF] live-check node=%p not-loaded", node);
             return NO;
         }
-        NSURL *url = node.URL;
-        return [url isKindOfClass:[NSURL class]] && url.absoluteString.length > 0;
+        if (!node.supernode) {
+            ApolloUnregisterInlineGIFNode(node);
+            ApolloLog(@"[AutoplayGIF] live-check node=%p no-supernode", node);
+            return NO;
+        }
+        // Deliberately no node.URL requirement: the tweak's GIF pipeline loads
+        // through its own downloader and never sets the node URL, so a URL
+        // check disqualified every hosted GIF from settings-refresh handling.
+        return YES;
     } @catch (NSException *exception) {
         ApolloLog(@"[AutoplayGIF] live-check failed node=%p class=%@ reason=%@",
                   node, NSStringFromClass([node class]), exception.reason);
@@ -2435,13 +2558,33 @@ static void ApolloPauseInlineGIFNode(ASNetworkImageNode *imageNode, UIImage *cov
             ApolloApplyFLAnimatedImageViewAutoplayGate(animView);
         }
     }
+    // Also halt Texture's own animated-image display in case this node's GIF
+    // renders through the PIN pipeline rather than an FLAnimatedImageView.
+    if ([imageNode respondsToSelector:@selector(setAnimatedImagePaused:)]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(imageNode, @selector(setAnimatedImagePaused:), YES);
+    }
 
     if (cover && cover.size.width > 0 && [imageNode respondsToSelector:@selector(setImage:)]) {
+        // setImage: makes Texture clear the node's animatedImage, which fires
+        // our _locked_setAnimatedImage:(nil) hook. Without the in-flight flag
+        // that scheduled ApolloClearInlineGIFNodeState — silently wiping the
+        // GIF flag, removing the play overlay, and unregistering the node the
+        // moment it was paused (so taps opened the viewer instead of playing
+        // inline, and settings refreshes found nothing to resume).
+        objc_setAssociatedObject(imageNode, &kApolloInlineGIFReloadInFlightKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [imageNode setImage:cover];
+        objc_setAssociatedObject(imageNode, &kApolloInlineGIFReloadInFlightKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
     if (view) {
-        ApolloInstallPlayOverlayOnView(view, imageNode);
+        // Never mode is a pure static cover — tap falls through to the normal
+        // image tap (media viewer). Tap to Play / blocked WiFi Only get the
+        // inline play button.
+        if (ApolloPausedInlineGIFWantsPlayOverlay()) {
+            ApolloInstallPlayOverlayOnView(view, imageNode);
+        } else {
+            ApolloRemovePlayOverlayFromNode(imageNode);
+        }
     }
 }
 
@@ -2472,19 +2615,29 @@ BOOL ApolloReloadInlineGIFImageNodeForAutoplay(id imageNode) {
     ASNetworkImageNode *node = (ASNetworkImageNode *)imageNode;
     if (!ApolloInlineGIFImageNodeIsLiveForRefresh(node)) return NO;
 
-    BOOL wasPaused = objc_getAssociatedObject(node, &kApolloPlayOverlayViewKey) != nil;
-    if (!wasPaused) {
-        ApolloRemovePlayOverlayFromNode(node);
-        if (ApolloResumeInlineGIFPlaybackIfPossible(node)) {
-            ApolloLog(@"[AutoplayGIF] resume-only node=%p", node);
-            return NO;
-        }
-        // GIF still loading on a fresh comment row — _locked_setAnimatedImage policy handles it.
+    ApolloRemovePlayOverlayFromNode(node);
+    if (ApolloResumeInlineGIFPlaybackIfPossible(node)) {
+        ApolloLog(@"[AutoplayGIF] resume-only node=%p", node);
         return NO;
     }
+    // No live FLAnimatedImageView to resume (the pause's cover swap tears the
+    // playback state down) — re-inject the retained animated image, same as
+    // tap-to-play. The tweak's GIF pipeline doesn't set node.URL, so a URL
+    // round trip usually isn't available.
+    id storedAnim = objc_getAssociatedObject(node, &kApolloInlineGIFAnimatedImageKey);
+    if (storedAnim && [node respondsToSelector:@selector(setAnimatedImage:)]) {
+        @try {
+            [(id)node setAnimatedImage:storedAnim];
+        } @catch (NSException *exception) {
+            ApolloLog(@"[AutoplayGIF] reload reinject failed node=%p reason=%@", node, exception.reason);
+            ApolloUnregisterInlineGIFNode(node);
+            return NO;
+        }
+        ApolloLog(@"[AutoplayGIF] reload reinject node=%p", node);
+        return YES;
+    }
 
-    if (![node respondsToSelector:@selector(clearImage)] ||
-        ![node respondsToSelector:@selector(setURL:)] ||
+    if (![node respondsToSelector:@selector(setURL:)] ||
         ![node respondsToSelector:@selector(URL)]) {
         ApolloUnregisterInlineGIFNode(node);
         return NO;
@@ -2495,16 +2648,25 @@ BOOL ApolloReloadInlineGIFImageNodeForAutoplay(id imageNode) {
 
     ApolloCancelInlineGIFPendingPolicyBlocks(node);
     ApolloInlineGIFBumpGeneration(node);
-    ApolloRemovePlayOverlayFromNode(node);
     objc_setAssociatedObject(node, &kApolloInlineGIFUserForcedPlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
+    // This AsyncDisplayKit build has no -clearImage; reset through the URL
+    // round trip (setURL:nil clears image + animatedImage internally). The
+    // in-flight flag keeps our setURL:/_locked_setAnimatedImage hooks from
+    // clearing the node's inline-GIF state during the reset.
+    objc_setAssociatedObject(node, &kApolloInlineGIFReloadInFlightKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BOOL reloadOK = YES;
     @try {
-        [node clearImage];
+        if ([node respondsToSelector:@selector(setImage:)]) [node setImage:nil];
         [node setURL:nil];
         [node setURL:url];
     } @catch (NSException *exception) {
         ApolloLog(@"[AutoplayGIF] reload failed node=%p class=%@ reason=%@",
                   node, NSStringFromClass([node class]), exception.reason);
+        reloadOK = NO;
+    }
+    objc_setAssociatedObject(node, &kApolloInlineGIFReloadInFlightKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!reloadOK) {
         ApolloUnregisterInlineGIFNode(node);
         return NO;
     }
@@ -2649,8 +2811,25 @@ static BOOL ApolloResumeInlineGIFPlaybackIfPossible(ASNetworkImageNode *imageNod
     UIView *view = [imageNode respondsToSelector:@selector(view)] ? [imageNode view] : nil;
     if (!view) return NO;
 
+    // Mirror of the pause path: release Texture's animated-image pause in case
+    // this node's GIF renders through the PIN pipeline.
+    if ([imageNode respondsToSelector:@selector(setAnimatedImagePaused:)]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(imageNode, @selector(setAnimatedImagePaused:), NO);
+    }
+
     UIView *animView = ApolloFindFLAnimatedImageViewInView(view);
     if (!animView) return NO;
+
+    // The pause's cover swap makes Texture drop the view's animatedImage —
+    // with no animation data "resuming" would just leave the cover frozen.
+    // Report NO so callers fall back to re-injecting/reloading the GIF.
+    id currentAnim = nil;
+    @try {
+        if ([animView respondsToSelector:@selector(animatedImage)]) {
+            currentAnim = [animView valueForKey:@"animatedImage"];
+        }
+    } @catch (__unused NSException *exception) {}
+    if (!currentAnim) return NO;
 
     BOOL forcedPlay = [objc_getAssociatedObject(imageNode, &kApolloInlineGIFUserForcedPlayKey) boolValue];
     if (forcedPlay) ApolloSetInlineGIFUserForcedPlay(animView, YES);
@@ -2674,8 +2853,37 @@ static void ApolloStartInlineGIFPlayback(ASNetworkImageNode *imageNode) {
         }
 
         ApolloRemovePlayOverlayFromNode(imageNode);
+
+        // Nothing to resume — the pause's cover swap made Texture drop its
+        // animatedImage. Re-inject the retained copy; that re-runs the
+        // _locked_setAnimatedImage flow, and the playback policy honors the
+        // forced-play flag set above.
+        id storedAnim = objc_getAssociatedObject(imageNode, &kApolloInlineGIFAnimatedImageKey);
+        if (storedAnim && [imageNode respondsToSelector:@selector(setAnimatedImage:)]) {
+            @try {
+                [(id)imageNode setAnimatedImage:storedAnim];
+                ApolloLog(@"[AutoplayGIF] userPlay node=%p reinject=1", imageNode);
+                return;
+            } @catch (NSException *exception) {
+                ApolloLog(@"[AutoplayGIF] userPlay reinject failed node=%p reason=%@", imageNode, exception.reason);
+            }
+        }
+
         ApolloApplyInlineGIFPlaybackPolicyWithCover(imageNode, nil, 0);
         ApolloLog(@"[AutoplayGIF] userPlay node=%p resume=0 policy=1", imageNode);
+    });
+}
+
+// Second tap on a tap-to-play GIF: pause it back to the static cover + play
+// button. ApolloPauseInlineGIFNode clears the forced-play flags, halts both
+// animation pipelines, swaps the cover in, and re-installs the overlay per
+// the current mode — so the next tap plays it again.
+static void ApolloStopInlineGIFPlayback(ASNetworkImageNode *imageNode) {
+    if (!imageNode) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIImage *cover = objc_getAssociatedObject(imageNode, &kApolloInlineGIFCoverImageKey);
+        ApolloPauseInlineGIFNode(imageNode, cover);
+        ApolloLog(@"[AutoplayGIF] userPause node=%p cover=%d", imageNode, cover != nil);
     });
 }
 
@@ -2991,8 +3199,48 @@ static const CGFloat kApolloMinTallImageWidth = 85.0;
 // sizing stays unchanged.
 static const CGFloat kApolloMaxScreenHeightFraction = 0.6;
 
+// MARK: - Inline media layout registry (live size/alignment changes)
+//
+// Every inline media leaf that measures through ApolloWrapImageNodeForLayout
+// is tracked weakly so the Inline Media settings screen can re-measure the
+// visible comments the moment Size or Alignment changes — no leaving the
+// thread and coming back.
+static NSHashTable *sApolloInlineMediaLayoutNodes = nil;
+
+static void ApolloRegisterInlineMediaLayoutNode(ASDisplayNode *node) {
+    if (!node) return;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sApolloInlineMediaLayoutNodes = [NSHashTable weakObjectsHashTable];
+    });
+    @synchronized (sApolloInlineMediaLayoutNodes) {
+        [sApolloInlineMediaLayoutNodes addObject:node];
+    }
+}
+
+static void ApolloRefreshInlineMediaLayout(void) {
+    if (!sApolloInlineMediaLayoutNodes) return;
+    NSArray *nodes = nil;
+    @synchronized (sApolloInlineMediaLayoutNodes) {
+        nodes = sApolloInlineMediaLayoutNodes.allObjects;
+    }
+    SEL relayoutSel = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
+    NSUInteger relaid = 0;
+    for (ASDisplayNode *node in nodes) {
+        if (![node respondsToSelector:relayoutSel]) continue;
+        @try {
+            if (!node.supernode) continue;
+            ((void (*)(id, SEL))objc_msgSend)(node, relayoutSel);
+            relaid++;
+        } @catch (__unused NSException *exception) {}
+    }
+    ApolloLog(@"[InlineImages] media layout refresh nodes=%lu relaid=%lu",
+              (unsigned long)nodes.count, (unsigned long)relaid);
+}
+
 static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
                                                    CGFloat rowMaxWidth) {
+    ApolloRegisterInlineMediaLayoutNode((ASDisplayNode *)imageNode);
     NSNumber *ratioNum = objc_getAssociatedObject(imageNode, &kApolloAspectRatioKey);
     if (!ratioNum) {
         // Unknown ratio → omit from layout. Including with a guessed ratio
@@ -3059,6 +3307,13 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
 
     ASRatioLayoutSpec *ratioSpec = [ApolloASRatioLayoutSpecClass() ratioLayoutSpecWithRatio:containerRatio child:imageNode];
     [[ratioSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
+
+    // User-selected inline media size (100/75/50% of the row width). Applied
+    // as a width cap so the ratio spec keeps height proportional; the slack
+    // distribution below then positions the smaller container per alignment.
+    if (sInlineMediaSizePercent > 0 && sInlineMediaSizePercent < 100) {
+        containerWidth = MIN(containerWidth, rowMaxWidth * (sInlineMediaSizePercent / 100.0));
+    }
 
     // Position the container horizontally per user preference.
     // Only has a visual effect when containerWidth < rowMaxWidth (tall portrait
@@ -3738,4 +3993,10 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
 
 %ctor {
     ApolloMediaAutoplayInstall();
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloInlineMediaLayoutDidChangeNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *note) {
+        ApolloRefreshInlineMediaLayout();
+    }];
 }

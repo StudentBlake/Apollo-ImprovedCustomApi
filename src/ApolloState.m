@@ -50,6 +50,7 @@ BOOL sEnableTapToSummarize = NO;
 BOOL sEnableAIAutoExpandSummaries = NO;
 NSInteger sInlineImageAlignment = ApolloInlineImageAlignmentCenter;
 NSInteger sAutoplayInlineGIFMode = ApolloAutoplayInlineGIFModeDefault;
+NSInteger sInlineMediaSizePercent = 100;
 NSInteger sLinkPreviewBodyMode = ApolloLinkPreviewModeOff;
 NSInteger sLinkPreviewCommentsMode = ApolloLinkPreviewModeOff;
 NSInteger sLinkPreviewCardColor = ApolloLinkPreviewCardColorNeutral;
