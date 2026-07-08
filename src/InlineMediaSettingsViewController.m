@@ -496,7 +496,7 @@ typedef NS_ENUM(NSInteger, ApolloIMOptionsRow) {
         case ApolloIMSectionMaster:
             return @"Render image, GIF, and video links inside post text and comments instead of leaving them as plain links.";
         case ApolloIMSectionOptions:
-            return @"Tap to Play shows a paused GIF with a play button — tapping plays or pauses that one GIF inline. Never shows a static preview (tap opens the viewer). WiFi Only autoplays on WiFi and behaves like Tap to Play on cellular.";
+            return @"Tap to Play shows a paused GIF with a play button — the button plays that one GIF inline, a small corner pause button stops it, and tapping the rest of the GIF opens the fullscreen viewer as usual. Never shows a static preview (tap opens the viewer). WiFi Only autoplays on WiFi and behaves like Tap to Play on cellular.";
         default:
             return nil;
     }

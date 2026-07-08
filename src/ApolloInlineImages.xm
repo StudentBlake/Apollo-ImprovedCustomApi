@@ -148,7 +148,7 @@ static char kApolloOriginalImageURLKey;        // NSURL for tap/long-press when 
 static char kApolloHostMarkdownNodeKey;        // weak ref (assign association) to the host MarkdownNode
 static char kApolloAspectRatioKey;             // NSNumber height/width — NIL if unknown (no URL params yet, no DIDLOAD yet)
 static char kApolloLongPressInstalledKey;      // NSNumber BOOL — gate for one-shot UIContextMenuInteraction install
-static char kApolloPlayOverlayViewKey;         // UIView play overlay container, also used as install gate
+static char kApolloPlayOverlayViewKey;         // ApolloPlayOverlayContainer (play button OR pause badge), also used as install gate
 static char kApolloInlineAnimatedGIFKey;       // NSNumber BOOL — node loaded an animated GIF
 static char kApolloInlineGIFAnimatedImageKey;  // id — retained animated image for tap-to-play restore
 static char kApolloInlineGIFCoverImageKey;     // UIImage — first-frame cover for static pause + refresh
@@ -156,6 +156,7 @@ static char kApolloInlineGIFUserForcedPlayKey; // NSNumber BOOL — user tapped 
 static char kApolloInlineGIFPendingPolicyBlocksKey; // NSMutableArray<dispatch_block_t>
 static char kApolloInlineGIFGenerationKey;     // NSNumber — bumped on clear/reuse to invalidate async GIF policy blocks
 static char kApolloInlineGIFReloadInFlightKey; // NSNumber BOOL — internal URL/image reset in progress (settings-refresh reload, pause cover swap): suppress ClearState from the reset round trip
+static char kApolloInlineGIFOverlayReassertKey; // NSNumber BOOL — a play-overlay reassert sequence is pending for this GIF node
 static char kApolloStackedCardSyncerKey;       // ApolloStackedCardSyncer — keeps the multi-image card peeking behind imageNode
 static char kApolloImageChestItemsKey;         // NSArray<NSDictionary *> direct ImageChest CDN image entries for album pager
 
@@ -185,6 +186,8 @@ static void ApolloClearInlineGIFCoverImageReadyCallback(id anim);
 static void ApolloTrackInlineGIFPendingPolicyBlock(ASDisplayNode *node, dispatch_block_t block);
 static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node);
 static void ApolloRemovePlayOverlayFromNode(ASDisplayNode *node);
+static void ApolloUpdateInlineGIFOverlayForNode(ASDisplayNode *node);
+static void ApolloSchedulePlayOverlayReassert(ASNetworkImageNode *imageNode, NSUInteger attempt);
 static NSDictionary *ApolloMediaMetadataForHost(ASDisplayNode *hostMarkdownNode);
 
 // MARK: - Class lookups (cached)
@@ -1685,19 +1688,33 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
 }
 
 - (void)imageNodeTapped:(id)imageNode {
-    // Inline tap-to-play only when the play-button overlay is showing
-    // (Tap to Play mode, or WiFi Only while blocked). Never mode has no
-    // overlay — the tap falls through to the media viewer like any image.
+    // Tap-to-play GIFs: the play button / corner pause badge overlay
+    // (ApolloPlayOverlayContainer) swallows taps on its own icon zone and
+    // toggles inline playback there. Any other tap on the GIF lands here
+    // and falls through to the media viewer below — fullscreen stays
+    // reachable with the overlay up, exactly like a plain image.
+    //
+    // Self-heal: Texture can recycle the node's backing view on a
+    // relayout-from-above (async cover sizing, metadata rebuilds) and
+    // silently drop the container (see ApolloSchedulePlayOverlayReassert).
+    // With the overlay detached there is no icon zone, so without this a
+    // tap-to-play GIF would be unplayable inline until a settings change.
+    // Fall back to the whole-GIF toggle in that state; Start/Stop re-run
+    // the overlay mapper, which re-attaches the proper overlay.
     if ([objc_getAssociatedObject(imageNode, &kApolloInlineAnimatedGIFKey) boolValue] &&
-        (objc_getAssociatedObject(imageNode, &kApolloPlayOverlayViewKey) ||
-         (!ApolloShouldAutoplayInlineGIFCached() && ApolloPausedInlineGIFWantsPlayOverlay()))) {
-        if ([objc_getAssociatedObject(imageNode, &kApolloInlineGIFUserForcedPlayKey) boolValue]) {
-            // Tap while force-playing — pause back to the cover + play button.
-            ApolloStopInlineGIFPlayback((ASNetworkImageNode *)imageNode);
-        } else {
-            ApolloStartInlineGIFPlayback((ASNetworkImageNode *)imageNode);
+        !ApolloShouldAutoplayInlineGIFCached() && ApolloPausedInlineGIFWantsPlayOverlay()) {
+        UIView *overlay = objc_getAssociatedObject(imageNode, &kApolloPlayOverlayViewKey);
+        UIView *nodeView = ([imageNode respondsToSelector:@selector(isNodeLoaded)] && [imageNode isNodeLoaded])
+            ? [imageNode view] : nil;
+        if (!overlay || !nodeView || overlay.superview != nodeView) {
+            ApolloLog(@"[AutoplayGIF] tap heal node=%p overlay=%p detached=1", imageNode, overlay);
+            if ([objc_getAssociatedObject(imageNode, &kApolloInlineGIFUserForcedPlayKey) boolValue]) {
+                ApolloStopInlineGIFPlayback((ASNetworkImageNode *)imageNode);
+            } else {
+                ApolloStartInlineGIFPlayback((ASNetworkImageNode *)imageNode);
+            }
+            return;
         }
-        return;
     }
 
     NSArray *imageChestItems = objc_getAssociatedObject(imageNode, &kApolloImageChestItemsKey);
@@ -2055,15 +2072,10 @@ static void ApolloGateNativeInlineAnimatedImageIfNeeded(ASDisplayNode *node) {
         ApolloRegisterInlineGIFNode(strong);
 
         ApolloMarkHostedInlineGIFViewWhenLoaded((ASNetworkImageNode *)strong, generation);
-        if (!ApolloShouldAutoplayInlineGIFCached()) {
-            ASDisplayNode *displayNode = (ASDisplayNode *)strong;
-            if ([displayNode respondsToSelector:@selector(isNodeLoaded)] && [displayNode isNodeLoaded]) {
-                UIView *view = [displayNode view];
-                if (view && cover && cover.size.width > 0 && ApolloPausedInlineGIFWantsPlayOverlay()) {
-                    ApolloInstallPlayOverlayOnView(view, displayNode);
-                }
-            }
-        }
+        // Attach the play button (or pause badge, when this set is the
+        // tap-to-play re-inject) as soon as the view exists; no-ops until
+        // node load, after which the playback policy's pause path installs.
+        ApolloUpdateInlineGIFOverlayForNode((ASDisplayNode *)strong);
 
         ApolloApplyInlineGIFPlaybackPolicyWithCover((ASNetworkImageNode *)strong, cover, 0);
         if (cover && cover.size.width > 0 && cover.size.height > 0) return;
@@ -2316,13 +2328,64 @@ static UIImage *ApolloPlayOverlayImage(void) {
 }
 
 
-// A UIView that centers its single subview in layoutSubviews, AND on
+// The small corner pause badge shown on a tap-to-play GIF while the user has
+// it playing — same visual language as the play circle, scaled down.
+static UIImage *ApolloInlineGIFPauseBadgeImage(void) {
+    static UIImage *image;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CGFloat side = 30.0;
+        UIGraphicsBeginImageContextWithOptions(CGSizeMake(side, side), NO, 0.0);
+        CGContextRef ctx = UIGraphicsGetCurrentContext();
+        CGPoint center = CGPointMake(side * 0.5, side * 0.5);
+        CGRect circleRect = CGRectInset(CGRectMake(0, 0, side, side), 1.5, 1.5);
+
+        CGContextSaveGState(ctx);
+        CGContextSetShadowWithColor(ctx, CGSizeZero, 3.0, [UIColor colorWithWhite:0.0 alpha:0.55].CGColor);
+        CGContextSetFillColorWithColor(ctx, [UIColor colorWithWhite:0.0 alpha:0.45].CGColor);
+        CGContextFillEllipseInRect(ctx, circleRect);
+        CGContextRestoreGState(ctx);
+
+        CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithWhite:1.0 alpha:0.85].CGColor);
+        CGContextSetLineWidth(ctx, 1.5);
+        CGContextStrokeEllipseInRect(ctx, CGRectInset(circleRect, 0.75, 0.75));
+
+        [[UIColor whiteColor] setFill];
+        CGFloat barW = 3.0, barH = 11.0, gap = 5.0;
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(center.x - gap * 0.5 - barW, center.y - barH * 0.5, barW, barH)
+                                    cornerRadius:1.0] fill];
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(center.x + gap * 0.5, center.y - barH * 0.5, barW, barH)
+                                    cornerRadius:1.0] fill];
+
+        image = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+    });
+    return image;
+}
+
+// Overlay styles: the centered play button (paused tap-to-play GIFs + inline
+// video posters) and the corner pause badge (tap-to-play GIF while playing).
+typedef NS_ENUM(NSInteger, ApolloInlineOverlayStyle) {
+    ApolloInlineOverlayStylePlay = 0,
+    ApolloInlineOverlayStylePauseBadge = 1,
+};
+
+// A UIView that positions its single subview in layoutSubviews, AND on
 // every observed bounds change of its host layer. Texture sets layer
 // frames directly without going through UIView's setBounds:, so neither
 // autoresizingMask nor layoutSubviews fire on resize. KVO on the host
 // layer's bounds is the only reliable signal.
+//
+// For tap-to-play GIFs the icon zone is interactive: a tap on (or near) the
+// icon toggles inline playback and is swallowed there. A tap anywhere else on
+// the GIF fails pointInside: and lands on the imageNode's own tap action —
+// the fullscreen media viewer — so fullscreen stays reachable exactly like a
+// plain image. Video-poster overlays keep userInteractionEnabled=NO: the
+// whole poster opens the player, and the circle is just a visual cue.
 @interface ApolloPlayOverlayContainer : UIView
 @property (nonatomic, weak) CALayer *observedLayer;
+@property (nonatomic, weak) ASNetworkImageNode *overlayImageNode;
+@property (nonatomic) ApolloInlineOverlayStyle overlayStyle;
 @end
 @implementation ApolloPlayOverlayContainer
 - (void)layoutSubviews {
@@ -2332,10 +2395,26 @@ static UIImage *ApolloPlayOverlayImage(void) {
 - (void)recenter {
     for (UIView *sub in self.subviews) {
         CGSize s = sub.bounds.size;
-        sub.center = CGPointMake(self.bounds.size.width * 0.5,
-                                  self.bounds.size.height * 0.5);
+        if (self.overlayStyle == ApolloInlineOverlayStylePauseBadge) {
+            sub.center = CGPointMake(self.bounds.size.width - 6.0 - s.width * 0.5,
+                                     self.bounds.size.height - 6.0 - s.height * 0.5);
+        } else {
+            sub.center = CGPointMake(self.bounds.size.width * 0.5,
+                                      self.bounds.size.height * 0.5);
+        }
         sub.bounds = (CGRect){CGPointZero, s};
     }
+}
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    // Only the icon zone belongs to the overlay; everything else falls
+    // through to the imageNode (media viewer tap, long-press menu).
+    if (!self.userInteractionEnabled) return NO;
+    UIView *icon = self.subviews.firstObject;
+    if (!icon || icon.hidden) return NO;
+    CGRect zone = icon.frame;
+    CGFloat padX = MAX(0.0, (44.0 - CGRectGetWidth(zone)) * 0.5);
+    CGFloat padY = MAX(0.0, (44.0 - CGRectGetHeight(zone)) * 0.5);
+    return CGRectContainsPoint(CGRectInset(zone, -padX, -padY), point);
 }
 - (void)observeValueForKeyPath:(NSString *)keyPath
                       ofObject:(id)object
@@ -2349,6 +2428,27 @@ static UIImage *ApolloPlayOverlayImage(void) {
 }
 - (void)dealloc {
     [_observedLayer removeObserver:self forKeyPath:@"bounds"];
+}
+@end
+
+// The overlay tap targets the dispatcher singleton, not the container
+// itself — UIGestureRecognizer retains its target, so a self-targeting
+// recognizer would cycle container -> recognizer -> container and leak a
+// container on every play/pause style swap.
+@interface ApolloInlineImageDispatcher (ApolloInlineGIFOverlay)
+- (void)inlineGIFOverlayZoneTapped:(UITapGestureRecognizer *)recognizer;
+@end
+@implementation ApolloInlineImageDispatcher (ApolloInlineGIFOverlay)
+- (void)inlineGIFOverlayZoneTapped:(UITapGestureRecognizer *)recognizer {
+    ApolloPlayOverlayContainer *container = (ApolloPlayOverlayContainer *)recognizer.view;
+    if (![container isKindOfClass:[ApolloPlayOverlayContainer class]]) return;
+    ASNetworkImageNode *node = container.overlayImageNode;
+    if (!node) return;
+    if (container.overlayStyle == ApolloInlineOverlayStylePauseBadge) {
+        ApolloStopInlineGIFPlayback(node);
+    } else {
+        ApolloStartInlineGIFPlayback(node);
+    }
 }
 @end
 
@@ -2427,6 +2527,7 @@ static void ApolloClearInlineGIFNodeState(ASNetworkImageNode *node) {
     objc_setAssociatedObject(node, &kApolloInlineGIFCoverImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(node, &kApolloInlineAnimatedGIFKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(node, &kApolloInlineGIFUserForcedPlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(node, &kApolloInlineGIFOverlayReassertKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(node, &kApolloHostMarkdownNodeKey, nil, OBJC_ASSOCIATION_ASSIGN);
     ApolloUnregisterInlineGIFNode(node);
 }
@@ -2467,17 +2568,43 @@ static BOOL ApolloInlineGIFImageNodeIsLiveForRefresh(ASNetworkImageNode *node) {
     }
 }
 
-static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node) {
+// Idempotently attach the requested overlay style; swaps in place when the
+// node transitions between paused (play button) and user-playing (pause
+// badge). Stored under kApolloPlayOverlayViewKey so every existing removal
+// path (clear state, cell reuse, settings refresh) cleans up either style.
+static void ApolloInstallOverlayWithStyleOnView(UIView *v, ASDisplayNode *node, ApolloInlineOverlayStyle style) {
     if (!v || !node) return;
-    if (objc_getAssociatedObject(node, &kApolloPlayOverlayViewKey)) return;
+    ApolloPlayOverlayContainer *existing = objc_getAssociatedObject(node, &kApolloPlayOverlayViewKey);
+    if (existing) {
+        if ([existing isKindOfClass:[ApolloPlayOverlayContainer class]] &&
+            existing.overlayStyle == style && existing.superview == v) {
+            return;
+        }
+        ApolloRemovePlayOverlayFromNode(node);
+    }
 
     ApolloPlayOverlayContainer *container = [[ApolloPlayOverlayContainer alloc] initWithFrame:v.bounds];
-    container.userInteractionEnabled = NO;
     container.backgroundColor = [UIColor clearColor];
+    container.overlayStyle = style;
+    container.overlayImageNode = (ASNetworkImageNode *)node;
 
-    UIImageView *icon = [[UIImageView alloc] initWithImage:ApolloPlayOverlayImage()];
+    // Only tap-to-play GIFs get the interactive icon zone. Video posters
+    // (no inline-GIF flag) stay pure visuals — the whole poster is the tap
+    // target for the player, exactly as before.
+    BOOL gifTapToPlay = [objc_getAssociatedObject(node, &kApolloInlineAnimatedGIFKey) boolValue];
+    container.userInteractionEnabled = gifTapToPlay;
+    if (gifTapToPlay) {
+        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
+            initWithTarget:[ApolloInlineImageDispatcher shared]
+                    action:@selector(inlineGIFOverlayZoneTapped:)];
+        [container addGestureRecognizer:tap];
+    }
+
+    BOOL badge = (style == ApolloInlineOverlayStylePauseBadge);
+    UIImageView *icon = [[UIImageView alloc]
+        initWithImage:badge ? ApolloInlineGIFPauseBadgeImage() : ApolloPlayOverlayImage()];
     icon.userInteractionEnabled = NO;
-    icon.frame = CGRectMake(0, 0, 72, 72);
+    icon.frame = badge ? CGRectMake(0, 0, 30, 30) : CGRectMake(0, 0, 72, 72);
     [container addSubview:icon];
 
     [v addSubview:container];
@@ -2490,31 +2617,79 @@ static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node) {
     [container recenter];
 
     objc_setAssociatedObject(node, &kApolloPlayOverlayViewKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // GIF overlays get the same detach-heal as video posters: an async
+    // relayout-from-above (cover sizing, metadata rebuild) can recycle the
+    // backing view and silently drop the container — and with it the only
+    // inline play/pause tap zone. One pending sequence per node.
+    if (gifTapToPlay &&
+        ![objc_getAssociatedObject(node, &kApolloInlineGIFOverlayReassertKey) boolValue]) {
+        objc_setAssociatedObject(node, &kApolloInlineGIFOverlayReassertKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloSchedulePlayOverlayReassert((ASNetworkImageNode *)node, 0);
+    }
+}
+
+static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node) {
+    ApolloInstallOverlayWithStyleOnView(v, node, ApolloInlineOverlayStylePlay);
+}
+
+// Single source of truth mapping a hosted inline GIF's state to its overlay:
+//   autoplaying globally                       -> none (tap opens the viewer)
+//   paused + Tap to Play / blocked WiFi Only   -> centered play button
+//   user-started playback (forced play)        -> corner pause badge
+//   paused + Never                             -> none (pure static cover)
+static void ApolloUpdateInlineGIFOverlayForNode(ASDisplayNode *node) {
+    if (!node) return;
+    if (![objc_getAssociatedObject(node, &kApolloInlineAnimatedGIFKey) boolValue]) return;
+    if (![node respondsToSelector:@selector(isNodeLoaded)] || ![node isNodeLoaded]) return;
+    UIView *view = [node view];
+    if (!view) return;
+    if (ApolloShouldAutoplayInlineGIFCached() || !ApolloPausedInlineGIFWantsPlayOverlay()) {
+        ApolloRemovePlayOverlayFromNode(node);
+        return;
+    }
+    BOOL forced = [objc_getAssociatedObject(node, &kApolloInlineGIFUserForcedPlayKey) boolValue];
+    ApolloInstallOverlayWithStyleOnView(view, node,
+        forced ? ApolloInlineOverlayStylePauseBadge : ApolloInlineOverlayStylePlay);
 }
 
 // The play overlay is first added in onDidLoad while the node still has
 // zero bounds, then relies on KVO to recenter once Texture assigns the
-// real frame. Two things break that for inline video thumbnails:
-//   1. When the async DASH/poster resolve triggers a relayout-from-above,
-//      Texture can recycle the node's backing view and silently drop our
-//      manually-added overlay subview (the association still points at the
-//      now-detached container).
+// real frame. Two things break that for inline video thumbnails AND
+// tap-to-play GIF overlays:
+//   1. When an async resolve (DASH poster, GIF cover sizing, metadata
+//      rebuild) triggers a relayout-from-above, Texture can recycle the
+//      node's backing view and silently drop our manually-added overlay
+//      subview (the association still points at the now-detached container).
 //   2. If the very first layout pass already gave the node real bounds,
 //      the KVO "new bounds" notification may have fired before the overlay
 //      was attached.
-// Re-assert the overlay a few times after load so it survives view
+// Re-assert the overlay a few times after install so it survives view
 // recycling and late sizing. Idempotent when the overlay is already
-// correctly attached.
-static void ApolloScheduleVideoPlayOverlayReassert(ASNetworkImageNode *imageNode, NSUInteger attempt) {
+// correctly attached. GIF nodes re-derive their overlay from state (play
+// button vs pause badge vs none); video posters reinstall the play circle.
+static void ApolloSchedulePlayOverlayReassertMode(ASNetworkImageNode *imageNode, NSUInteger attempt, BOOL forGIF) {
     static const NSTimeInterval delays[] = {0.10, 0.25, 0.50, 1.0, 1.75, 2.5};
     static const NSUInteger maxAttempts = sizeof(delays) / sizeof(delays[0]);
-    if (!imageNode || attempt >= maxAttempts) return;
+    if (!imageNode) return;
+    if (attempt >= maxAttempts) {
+        if (forGIF) {
+            objc_setAssociatedObject(imageNode, &kApolloInlineGIFOverlayReassertKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
 
     __weak ASNetworkImageNode *weak = imageNode;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[attempt] * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         ASNetworkImageNode *node = weak;
         if (!node) return;
+        if (forGIF && ![objc_getAssociatedObject(node, &kApolloInlineAnimatedGIFKey) boolValue]) {
+            // The node was cleared/reused since this sequence was scheduled —
+            // stop; whatever the node shows now, it isn't our GIF anymore.
+            objc_setAssociatedObject(node, &kApolloInlineGIFOverlayReassertKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return;
+        }
         BOOL loaded = [node respondsToSelector:@selector(isNodeLoaded)] && [node isNodeLoaded];
         UIView *view = loaded ? [node view] : nil;
         if (view) {
@@ -2528,7 +2703,11 @@ static void ApolloScheduleVideoPlayOverlayReassert(ASNetworkImageNode *imageNode
                 overlay = nil;
             }
             if (!overlay) {
-                ApolloInstallPlayOverlayOnView(view, node);
+                if (forGIF) {
+                    ApolloUpdateInlineGIFOverlayForNode(node);
+                } else {
+                    ApolloInstallPlayOverlayOnView(view, node);
+                }
             } else {
                 [view bringSubviewToFront:overlay];
                 if ([overlay isKindOfClass:[ApolloPlayOverlayContainer class]]) {
@@ -2536,8 +2715,13 @@ static void ApolloScheduleVideoPlayOverlayReassert(ASNetworkImageNode *imageNode
                 }
             }
         }
-        ApolloScheduleVideoPlayOverlayReassert(node, attempt + 1);
+        ApolloSchedulePlayOverlayReassertMode(node, attempt + 1, forGIF);
     });
+}
+
+static void ApolloSchedulePlayOverlayReassert(ASNetworkImageNode *imageNode, NSUInteger attempt) {
+    ApolloSchedulePlayOverlayReassertMode(imageNode, attempt,
+        [objc_getAssociatedObject(imageNode, &kApolloInlineAnimatedGIFKey) boolValue]);
 }
 
 // Pause inline GIF playback without clearing animatedImage via KVC — that path
@@ -2576,16 +2760,10 @@ static void ApolloPauseInlineGIFNode(ASNetworkImageNode *imageNode, UIImage *cov
         objc_setAssociatedObject(imageNode, &kApolloInlineGIFReloadInFlightKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    if (view) {
-        // Never mode is a pure static cover — tap falls through to the normal
-        // image tap (media viewer). Tap to Play / blocked WiFi Only get the
-        // inline play button.
-        if (ApolloPausedInlineGIFWantsPlayOverlay()) {
-            ApolloInstallPlayOverlayOnView(view, imageNode);
-        } else {
-            ApolloRemovePlayOverlayFromNode(imageNode);
-        }
-    }
+    // Never mode is a pure static cover — tap falls through to the normal
+    // image tap (media viewer). Tap to Play / blocked WiFi Only get the
+    // inline play button (forced-play was cleared above, so never a badge).
+    ApolloUpdateInlineGIFOverlayForNode(imageNode);
 }
 
 BOOL ApolloPauseInlineGIFNodeForAutoplay(id imageNode) {
@@ -2739,7 +2917,7 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
         BOOL shouldPlay = forcedPlay || ApolloShouldAutoplayInlineGIFCached();
 
         if (shouldPlay) {
-            ApolloRemovePlayOverlayFromNode(strong);
+            ApolloUpdateInlineGIFOverlayForNode(strong);
             if (ApolloResumeInlineGIFPlaybackIfPossible(strong)) {
                 ApolloLog(@"[AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=1 forced=%d",
                           strong, (unsigned long)retryIndex, forcedPlay);
@@ -2834,7 +3012,9 @@ static BOOL ApolloResumeInlineGIFPlaybackIfPossible(ASNetworkImageNode *imageNod
     BOOL forcedPlay = [objc_getAssociatedObject(imageNode, &kApolloInlineGIFUserForcedPlayKey) boolValue];
     if (forcedPlay) ApolloSetInlineGIFUserForcedPlay(animView, YES);
     ApolloApplyFLAnimatedImageViewAutoplayGate(animView);
-    ApolloRemovePlayOverlayFromNode(imageNode);
+    // Autoplay resume drops the overlay; a user-forced (tap-to-play) resume
+    // swaps the play button for the corner pause badge.
+    ApolloUpdateInlineGIFOverlayForNode(imageNode);
     ApolloLog(@"[AutoplayGIF] resume node=%p animView=%p forced=%d", imageNode, animView, forcedPlay);
     return YES;
 }
@@ -2852,7 +3032,9 @@ static void ApolloStartInlineGIFPlayback(ASNetworkImageNode *imageNode) {
             return;
         }
 
-        ApolloRemovePlayOverlayFromNode(imageNode);
+        // Forced-play was set above — this swaps the play button for the
+        // corner pause badge right away, before the re-inject lands.
+        ApolloUpdateInlineGIFOverlayForNode(imageNode);
 
         // Nothing to resume — the pause's cover swap made Texture drop its
         // animatedImage. Re-inject the retained copy; that re-runs the
@@ -2874,10 +3056,10 @@ static void ApolloStartInlineGIFPlayback(ASNetworkImageNode *imageNode) {
     });
 }
 
-// Second tap on a tap-to-play GIF: pause it back to the static cover + play
-// button. ApolloPauseInlineGIFNode clears the forced-play flags, halts both
-// animation pipelines, swaps the cover in, and re-installs the overlay per
-// the current mode — so the next tap plays it again.
+// Tap on the corner pause badge of a playing tap-to-play GIF: pause it back
+// to the static cover + play button. ApolloPauseInlineGIFNode clears the
+// forced-play flags, halts both animation pipelines, swaps the cover in, and
+// re-installs the overlay per the current mode — so the next tap plays again.
 static void ApolloStopInlineGIFPlayback(ASNetworkImageNode *imageNode) {
     if (!imageNode) return;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -3049,7 +3231,7 @@ static ASNetworkImageNode *ApolloMakeInlineVideoThumbnailNode(NSURL *videoURL,
         }
 
         if (v) ApolloInstallPlayOverlayOnView(v, img);
-        ApolloScheduleVideoPlayOverlayReassert(img, 0);
+        ApolloSchedulePlayOverlayReassert(img, 0);
         if (v && ![objc_getAssociatedObject(img, &kApolloLongPressInstalledKey) boolValue]) {
             NSURL *u = objc_getAssociatedObject(img, &kApolloImageURLKey);
             objc_setAssociatedObject(v, &kApolloImageURLKey, u, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
