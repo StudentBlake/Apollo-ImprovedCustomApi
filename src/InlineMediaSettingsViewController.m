@@ -172,6 +172,151 @@ static UILabel *ApolloIMName(UIView *parent, NSString *text) {
 
 @end
 
+// MARK: - Detent slider (50 / 75 / 100)
+
+static NSInteger ApolloIMSnapPercent(float value) {
+    if (value < 62.5f) return 50;
+    if (value < 87.5f) return 75;
+    return 100;
+}
+
+// UISlider with exactly three stops. Unlike a stock slider, tracking begins
+// from a touch anywhere on the bar (not just on the thumb), and the thumb
+// snaps between the detents while dragging — with a selection tick on each
+// snap. Tick marks at both ends and the middle show the three positions so
+// it doesn't read as a free-flowing slider.
+@interface ApolloIMDetentSlider : UISlider
+@property (nonatomic, strong) NSArray<UIView *> *tickViews;
+@property (nonatomic, strong) UISelectionFeedbackGenerator *feedback;
+// Pan recognizers up the view chain (Apollo's swipe-anywhere-back, the nav
+// pop edge gesture) suspended for the duration of a drag — they otherwise
+// steal the horizontal drag mid-track and pop the screen.
+@property (nonatomic, strong) NSHashTable<UIGestureRecognizer *> *suspendedPans;
+@end
+
+@implementation ApolloIMDetentSlider
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        NSMutableArray<UIView *> *ticks = [NSMutableArray array];
+        for (int i = 0; i < 3; i++) {
+            UIView *tick = [[UIView alloc] init];
+            tick.backgroundColor = [UIColor tertiaryLabelColor];
+            tick.userInteractionEnabled = NO;
+            tick.layer.cornerRadius = 1.0;
+            // Behind the track/thumb subviews: the track covers the middle of
+            // each tick, leaving the ends peeking above and below the bar.
+            [self insertSubview:tick atIndex:0];
+            [ticks addObject:tick];
+        }
+        _tickViews = ticks;
+        _feedback = [[UISelectionFeedbackGenerator alloc] init];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGRect track = [self trackRectForBounds:self.bounds];
+    const CGFloat fractions[3] = {0.0, 0.5, 1.0};
+    for (NSUInteger i = 0; i < self.tickViews.count && i < 3; i++) {
+        CGFloat x = CGRectGetMinX(track) + fractions[i] * CGRectGetWidth(track);
+        self.tickViews[i].frame = CGRectMake(x - 1.0, CGRectGetMidY(track) - 7.0, 2.0, 14.0);
+    }
+}
+
+- (void)apollo_applyTouch:(UITouch *)touch {
+    CGRect track = [self trackRectForBounds:self.bounds];
+    CGFloat width = MAX(1.0, CGRectGetWidth(track));
+    CGFloat fraction = ([touch locationInView:self].x - CGRectGetMinX(track)) / width;
+    fraction = MIN(1.0, MAX(0.0, fraction));
+    float raw = self.minimumValue + fraction * (self.maximumValue - self.minimumValue);
+    float snapped = (float)ApolloIMSnapPercent(raw);
+    if ((NSInteger)lroundf(self.value) != (NSInteger)snapped) {
+        [self setValue:snapped animated:YES];
+        [self.feedback selectionChanged];
+        [self sendActionsForControlEvents:UIControlEventValueChanged];
+    }
+}
+
+// Same recipe as the stats-row loupe (SRTDisableCompetingPans): the
+// interactive pop recognizer must be fetched from the navigation controller
+// explicitly — it is not reliably reachable by walking the touched view's
+// superview chain — and Apollo's full-width back-swipe / parallax transition
+// pans match by class name, not only by UIPanGestureRecognizer ancestry.
+- (void)apollo_suspendCompetingPans {
+    NSHashTable<UIGestureRecognizer *> *suspended = [NSHashTable weakObjectsHashTable];
+
+    UINavigationController *nav = nil;
+    for (UIResponder *r = self.nextResponder; r && !nav; r = r.nextResponder) {
+        if ([r isKindOfClass:[UINavigationController class]]) {
+            nav = (UINavigationController *)r;
+        } else if ([r isKindOfClass:[UIViewController class]]) {
+            nav = ((UIViewController *)r).navigationController;
+        }
+    }
+    UIGestureRecognizer *pop = nav.interactivePopGestureRecognizer;
+    if (pop && pop.isEnabled) {
+        pop.enabled = NO;
+        [suspended addObject:pop];
+        ApolloLog(@"[InlineMedia] slider suspend pop=%@ on=%@",
+                  NSStringFromClass([pop class]), NSStringFromClass([pop.view class]));
+    }
+
+    for (UIView *view = self.superview; view; view = view.superview) {
+        for (UIGestureRecognizer *gesture in view.gestureRecognizers) {
+            if (gesture == pop || !gesture.enabled) continue;
+            // Leave the enclosing scroll view's own pan alone — UIControl
+            // tracking already defers vertical scrolling correctly.
+            if ([view isKindOfClass:[UIScrollView class]] &&
+                gesture == ((UIScrollView *)view).panGestureRecognizer) continue;
+            NSString *cls = NSStringFromClass([gesture class]);
+            BOOL panLike = [gesture isKindOfClass:[UIPanGestureRecognizer class]]
+                || [cls containsString:@"ParallaxTransition"];
+            if (!panLike) continue;
+            gesture.enabled = NO;   // also cancels any in-flight recognition
+            [suspended addObject:gesture];
+            ApolloLog(@"[InlineMedia] slider suspend pan=%@ on=%@",
+                      cls, NSStringFromClass([view class]));
+        }
+    }
+    self.suspendedPans = suspended;
+}
+
+- (void)apollo_resumeCompetingPans {
+    for (UIGestureRecognizer *gesture in self.suspendedPans) {
+        gesture.enabled = YES;
+    }
+    self.suspendedPans = nil;
+}
+
+- (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    ApolloLog(@"[InlineMedia] slider beginTracking x=%.0f", [touch locationInView:self].x);
+    [self apollo_suspendCompetingPans];
+    [self.feedback prepare];
+    [self apollo_applyTouch:touch];
+    return YES;
+}
+
+- (BOOL)continueTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    [self apollo_applyTouch:touch];
+    return YES;
+}
+
+- (void)endTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    ApolloLog(@"[InlineMedia] slider endTracking value=%.0f", self.value);
+    [super endTrackingWithTouch:touch withEvent:event];
+    [self apollo_resumeCompetingPans];
+}
+
+- (void)cancelTrackingWithEvent:(UIEvent *)event {
+    ApolloLog(@"[InlineMedia] slider cancelTracking value=%.0f", self.value);
+    [super cancelTrackingWithEvent:event];
+    [self apollo_resumeCompetingPans];
+}
+
+@end
+
 // MARK: - Controller
 
 typedef NS_ENUM(NSInteger, ApolloIMSection) {
@@ -191,7 +336,6 @@ typedef NS_ENUM(NSInteger, ApolloIMOptionsRow) {
 @interface InlineMediaSettingsViewController ()
 @property (nonatomic, strong) ApolloInlineMediaPreviewView *previewView;
 @property (nonatomic, strong) UILabel *mediaSizeValueLabel;
-@property (nonatomic, weak) UISlider *mediaSlider;
 @end
 
 @implementation InlineMediaSettingsViewController
@@ -277,7 +421,7 @@ typedef NS_ENUM(NSInteger, ApolloIMOptionsRow) {
     [cell.contentView addSubview:value];
     if (valueLabelOut) *valueLabelOut = value;
 
-    UISlider *slider = [[UISlider alloc] init];
+    ApolloIMDetentSlider *slider = [[ApolloIMDetentSlider alloc] init];
     slider.minimumValue = 50.0;
     slider.maximumValue = 100.0;
     slider.value = (float)percent;
@@ -286,10 +430,6 @@ typedef NS_ENUM(NSInteger, ApolloIMOptionsRow) {
     slider.accessibilityLabel = label;
     slider.translatesAutoresizingMaskIntoConstraints = NO;
     [slider addTarget:self action:action forControlEvents:UIControlEventValueChanged];
-    // Tap anywhere on the track to jump straight to that detent — with only
-    // three stops this beats dragging the thumb.
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(sliderTapped:)];
-    [slider addGestureRecognizer:tap];
     [cell.contentView addSubview:slider];
 
     UILayoutGuide *margins = cell.contentView.layoutMarginsGuide;
@@ -305,12 +445,6 @@ typedef NS_ENUM(NSInteger, ApolloIMOptionsRow) {
         [slider.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10.0],
     ]];
     return cell;
-}
-
-static NSInteger ApolloIMSnapPercent(float value) {
-    if (value < 62.5f) return 50;
-    if (value < 87.5f) return 75;
-    return 100;
 }
 
 // MARK: Value strings
@@ -400,9 +534,6 @@ static NSInteger ApolloIMSnapPercent(float value) {
                                                            action:@selector(mediaSizeSliderChanged:)
                                                        valueLabel:&valueLabel];
                     self.mediaSizeValueLabel = valueLabel;
-                    for (UIView *sub in cell.contentView.subviews) {
-                        if ([sub isKindOfClass:[UISlider class]]) { self.mediaSlider = (UISlider *)sub; break; }
-                    }
                     return cell;
                 }
             }
@@ -443,19 +574,6 @@ static NSInteger ApolloIMSnapPercent(float value) {
     [[NSUserDefaults standardUserDefaults] setBool:sEnableInlineImages forKey:UDKeyEnableInlineImages];
     [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:ApolloIMSectionOptions]
                   withRowAnimation:UITableViewRowAnimationNone];
-}
-
-- (void)sliderTapped:(UITapGestureRecognizer *)gesture {
-    UISlider *slider = (UISlider *)gesture.view;
-    if (![slider isKindOfClass:[UISlider class]] || !slider.enabled) return;
-    CGRect track = [slider trackRectForBounds:slider.bounds];
-    CGFloat x = [gesture locationInView:slider].x;
-    CGFloat fraction = (x - CGRectGetMinX(track)) / MAX(1.0, CGRectGetWidth(track));
-    fraction = MIN(1.0, MAX(0.0, fraction));
-    slider.value = slider.minimumValue + fraction * (slider.maximumValue - slider.minimumValue);
-    if (slider == self.mediaSlider) {
-        [self mediaSizeSliderChanged:slider];
-    }
 }
 
 - (void)mediaSizeSliderChanged:(UISlider *)slider {
