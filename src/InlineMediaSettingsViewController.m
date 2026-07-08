@@ -143,8 +143,9 @@ static UILabel *ApolloIMName(UIView *parent, NSString *text) {
                      self.alignment == ApolloInlineImageAlignmentRight ? slack : slack * 0.5);
     self.mediaBlock.frame = CGRectMake(mediaX, y, mediaWidth, mediaHeight);
     self.gifBadge.frame = CGRectMake(8, mediaHeight - 26, 40, 18);
-    CGFloat playSide = MIN(52.0, mediaHeight * 0.4);
-    self.playIcon.frame = CGRectMake((mediaWidth - playSide) * 0.5, (mediaHeight - playSide) * 0.5, playSide, playSide);
+    // Matches the real overlay: a small play badge pinned bottom-right.
+    CGFloat playSide = 26.0;
+    self.playIcon.frame = CGRectMake(mediaWidth - 6.0 - playSide, mediaHeight - 6.0 - playSide, playSide, playSide);
     self.playIcon.hidden = !self.showsPlayOverlay;
     y += mediaHeight + 18;
 
@@ -496,7 +497,7 @@ typedef NS_ENUM(NSInteger, ApolloIMOptionsRow) {
         case ApolloIMSectionMaster:
             return @"Render image, GIF, and video links inside post text and comments instead of leaving them as plain links.";
         case ApolloIMSectionOptions:
-            return @"Tap to Play shows a paused GIF with a play button — the button plays that one GIF inline, a small corner pause button stops it, and tapping the rest of the GIF opens the fullscreen viewer as usual. Never shows a static preview (tap opens the viewer). WiFi Only autoplays on WiFi and behaves like Tap to Play on cellular.";
+            return @"Tap to Play shows a paused GIF with a play button in the bottom corner — it plays that one GIF inline and becomes a pause button, and tapping the rest of the GIF opens the fullscreen viewer as usual. Never shows a static preview (tap opens the viewer). WiFi Only autoplays on WiFi and behaves like Tap to Play on cellular.";
         default:
             return nil;
     }

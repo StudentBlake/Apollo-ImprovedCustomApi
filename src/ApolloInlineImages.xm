@@ -2328,43 +2328,65 @@ static UIImage *ApolloPlayOverlayImage(void) {
 }
 
 
-// The small corner pause badge shown on a tap-to-play GIF while the user has
-// it playing — same visual language as the play circle, scaled down.
-static UIImage *ApolloInlineGIFPauseBadgeImage(void) {
-    static UIImage *image;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        CGFloat side = 30.0;
-        UIGraphicsBeginImageContextWithOptions(CGSizeMake(side, side), NO, 0.0);
-        CGContextRef ctx = UIGraphicsGetCurrentContext();
-        CGPoint center = CGPointMake(side * 0.5, side * 0.5);
-        CGRect circleRect = CGRectInset(CGRectMake(0, 0, side, side), 1.5, 1.5);
+// The small corner badges for tap-to-play GIFs — play triangle while paused,
+// pause bars while playing. Same visual language as the video play circle,
+// scaled down and consistent between the two states (both live bottom-right).
+static UIImage *ApolloInlineGIFBadgeImage(BOOL pause) {
+    CGFloat side = 30.0;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(side, side), NO, 0.0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGPoint center = CGPointMake(side * 0.5, side * 0.5);
+    CGRect circleRect = CGRectInset(CGRectMake(0, 0, side, side), 1.5, 1.5);
 
-        CGContextSaveGState(ctx);
-        CGContextSetShadowWithColor(ctx, CGSizeZero, 3.0, [UIColor colorWithWhite:0.0 alpha:0.55].CGColor);
-        CGContextSetFillColorWithColor(ctx, [UIColor colorWithWhite:0.0 alpha:0.45].CGColor);
-        CGContextFillEllipseInRect(ctx, circleRect);
-        CGContextRestoreGState(ctx);
+    CGContextSaveGState(ctx);
+    CGContextSetShadowWithColor(ctx, CGSizeZero, 3.0, [UIColor colorWithWhite:0.0 alpha:0.55].CGColor);
+    CGContextSetFillColorWithColor(ctx, [UIColor colorWithWhite:0.0 alpha:0.45].CGColor);
+    CGContextFillEllipseInRect(ctx, circleRect);
+    CGContextRestoreGState(ctx);
 
-        CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithWhite:1.0 alpha:0.85].CGColor);
-        CGContextSetLineWidth(ctx, 1.5);
-        CGContextStrokeEllipseInRect(ctx, CGRectInset(circleRect, 0.75, 0.75));
+    CGContextSetStrokeColorWithColor(ctx, [UIColor colorWithWhite:1.0 alpha:0.85].CGColor);
+    CGContextSetLineWidth(ctx, 1.5);
+    CGContextStrokeEllipseInRect(ctx, CGRectInset(circleRect, 0.75, 0.75));
 
-        [[UIColor whiteColor] setFill];
+    [[UIColor whiteColor] setFill];
+    if (pause) {
         CGFloat barW = 3.0, barH = 11.0, gap = 5.0;
         [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(center.x - gap * 0.5 - barW, center.y - barH * 0.5, barW, barH)
                                     cornerRadius:1.0] fill];
         [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(center.x + gap * 0.5, center.y - barH * 0.5, barW, barH)
                                     cornerRadius:1.0] fill];
+    } else {
+        // Nudged right so the triangle reads optically centered.
+        UIBezierPath *triangle = [UIBezierPath bezierPath];
+        [triangle moveToPoint:CGPointMake(center.x - 3.75, center.y - 6.0)];
+        [triangle addLineToPoint:CGPointMake(center.x - 3.75, center.y + 6.0)];
+        [triangle addLineToPoint:CGPointMake(center.x + 6.25, center.y)];
+        [triangle closePath];
+        [triangle fill];
+    }
 
-        image = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-    });
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
     return image;
 }
 
-// Overlay styles: the centered play button (paused tap-to-play GIFs + inline
-// video posters) and the corner pause badge (tap-to-play GIF while playing).
+static UIImage *ApolloInlineGIFPauseBadgeImage(void) {
+    static UIImage *image;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ image = ApolloInlineGIFBadgeImage(YES); });
+    return image;
+}
+
+static UIImage *ApolloInlineGIFPlayBadgeImage(void) {
+    static UIImage *image;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ image = ApolloInlineGIFBadgeImage(NO); });
+    return image;
+}
+
+// Overlay styles: the play affordance (bottom-right badge on paused
+// tap-to-play GIFs; big centered circle on inline video posters) and the
+// bottom-right pause badge (tap-to-play GIF while playing).
 typedef NS_ENUM(NSInteger, ApolloInlineOverlayStyle) {
     ApolloInlineOverlayStylePlay = 0,
     ApolloInlineOverlayStylePauseBadge = 1,
@@ -2386,6 +2408,9 @@ typedef NS_ENUM(NSInteger, ApolloInlineOverlayStyle) {
 @property (nonatomic, weak) CALayer *observedLayer;
 @property (nonatomic, weak) ASNetworkImageNode *overlayImageNode;
 @property (nonatomic) ApolloInlineOverlayStyle overlayStyle;
+// GIF overlays pin the badge bottom-right (play AND pause, so the control
+// sits in one consistent spot); video posters center their play circle.
+@property (nonatomic) BOOL cornerPlacement;
 @end
 @implementation ApolloPlayOverlayContainer
 - (void)layoutSubviews {
@@ -2395,7 +2420,7 @@ typedef NS_ENUM(NSInteger, ApolloInlineOverlayStyle) {
 - (void)recenter {
     for (UIView *sub in self.subviews) {
         CGSize s = sub.bounds.size;
-        if (self.overlayStyle == ApolloInlineOverlayStylePauseBadge) {
+        if (self.cornerPlacement) {
             sub.center = CGPointMake(self.bounds.size.width - 6.0 - s.width * 0.5,
                                      self.bounds.size.height - 6.0 - s.height * 0.5);
         } else {
@@ -2593,6 +2618,7 @@ static void ApolloInstallOverlayWithStyleOnView(UIView *v, ASDisplayNode *node, 
     // target for the player, exactly as before.
     BOOL gifTapToPlay = [objc_getAssociatedObject(node, &kApolloInlineAnimatedGIFKey) boolValue];
     container.userInteractionEnabled = gifTapToPlay;
+    container.cornerPlacement = gifTapToPlay;
     if (gifTapToPlay) {
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
             initWithTarget:[ApolloInlineImageDispatcher shared]
@@ -2600,11 +2626,22 @@ static void ApolloInstallOverlayWithStyleOnView(UIView *v, ASDisplayNode *node, 
         [container addGestureRecognizer:tap];
     }
 
+    // GIF overlays: play and pause are the SAME small bottom-right badge so
+    // the control sits in one consistent spot and never covers the artwork.
+    // Video posters keep the big centered play circle.
     BOOL badge = (style == ApolloInlineOverlayStylePauseBadge);
-    UIImageView *icon = [[UIImageView alloc]
-        initWithImage:badge ? ApolloInlineGIFPauseBadgeImage() : ApolloPlayOverlayImage()];
+    UIImage *iconImage;
+    CGRect iconFrame;
+    if (gifTapToPlay) {
+        iconImage = badge ? ApolloInlineGIFPauseBadgeImage() : ApolloInlineGIFPlayBadgeImage();
+        iconFrame = CGRectMake(0, 0, 30, 30);
+    } else {
+        iconImage = ApolloPlayOverlayImage();
+        iconFrame = CGRectMake(0, 0, 72, 72);
+    }
+    UIImageView *icon = [[UIImageView alloc] initWithImage:iconImage];
     icon.userInteractionEnabled = NO;
-    icon.frame = badge ? CGRectMake(0, 0, 30, 30) : CGRectMake(0, 0, 72, 72);
+    icon.frame = iconFrame;
     [container addSubview:icon];
 
     [v addSubview:container];
@@ -2635,7 +2672,7 @@ static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node) {
 
 // Single source of truth mapping a hosted inline GIF's state to its overlay:
 //   autoplaying globally                       -> none (tap opens the viewer)
-//   paused + Tap to Play / blocked WiFi Only   -> centered play button
+//   paused + Tap to Play / blocked WiFi Only   -> corner play badge
 //   user-started playback (forced play)        -> corner pause badge
 //   paused + Never                             -> none (pure static cover)
 static void ApolloUpdateInlineGIFOverlayForNode(ASDisplayNode *node) {
