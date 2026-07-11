@@ -163,6 +163,81 @@ static OSStatus SimKeychainServe(NSDictionary *q, NSData *data, CFTypeRef *resul
 }
 #endif
 
+// Fixes apollo-reborn#567: an iCloud-synced Valet item can miss a plain read
+// (errSecItemNotFound) but still collide on add (errSecDuplicateItem), and
+// AccountManager wipes the account instead of retrying. Broaden reads to include
+// synced items; self-heal a duplicate-add via SecItemUpdate, falling back to
+// delete+recreate only if that fails.
+static NSDictionary *ApolloQueryByBroadeningSynchronizable(NSDictionary *query) {
+    if (query[(__bridge id)kSecAttrSynchronizable]) return query;
+    NSMutableDictionary *broadened = [query mutableCopy];
+    broadened[(__bridge id)kSecAttrSynchronizable] = (__bridge id)kSecAttrSynchronizableAny;
+    return broadened;
+}
+
+static void *SecItemCopyMatching_orig;
+
+static OSStatus ApolloCopyExistingKeychainItem(NSDictionary *strippedQuery, CFTypeRef *outResult) {
+    NSMutableDictionary *readQuery = [strippedQuery mutableCopy];
+    [readQuery removeObjectForKey:(__bridge id)kSecValueData];
+    NSDictionary *broadened = ApolloQueryByBroadeningSynchronizable(readQuery);
+    return ((OSStatus (*)(CFDictionaryRef, CFTypeRef *))SecItemCopyMatching_orig)((__bridge CFDictionaryRef)broadened, outResult);
+}
+
+static BOOL ApolloExistingKeychainItemHasSameValue(NSDictionary *strippedQuery) {
+    NSData *newValue = strippedQuery[(__bridge id)kSecValueData];
+    if (![newValue isKindOfClass:[NSData class]]) return NO;
+
+    NSMutableDictionary *dataQuery = [strippedQuery mutableCopy];
+    dataQuery[(__bridge id)kSecReturnData] = @YES;
+
+    CFTypeRef existing = NULL;
+    OSStatus status = ApolloCopyExistingKeychainItem(dataQuery, &existing);
+    if (status != errSecSuccess || !existing) return NO;
+    // A query with kSecReturnAttributes/Ref would return a dictionary/ref instead of
+    // bare data here -- guard so that shape isn't mistaken for a value mismatch crash.
+    id existingValue = (__bridge_transfer id)existing;
+    return [existingValue isKindOfClass:[NSData class]] && [existingValue isEqualToData:newValue];
+}
+
+static NSMutableDictionary *ApolloSelfHealSearchQuery(NSDictionary *query) {
+    NSMutableDictionary *searchQuery = [NSMutableDictionary dictionary];
+    searchQuery[(__bridge id)kSecClass] = query[(__bridge id)kSecClass] ?: (__bridge id)kSecClassGenericPassword;
+    for (id key in @[(__bridge id)kSecAttrService, (__bridge id)kSecAttrAccount, (__bridge id)kSecAttrAccessGroup]) {
+        if (query[key]) searchQuery[key] = query[key];
+    }
+    return searchQuery;
+}
+
+// Updating in place (vs. delete+recreate) keeps a synced item synced instead of
+// deleting it from every device on the account.
+static BOOL ApolloUpdateStaleKeychainItem(NSDictionary *query) {
+    NSData *newValue = query[(__bridge id)kSecValueData];
+    if (![newValue isKindOfClass:[NSData class]]) return NO;
+
+    NSMutableDictionary *searchQuery = ApolloSelfHealSearchQuery(query);
+    searchQuery[(__bridge id)kSecAttrSynchronizable] = (__bridge id)kSecAttrSynchronizableAny;
+    NSDictionary *update = @{(__bridge id)kSecValueData: newValue};
+    OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)searchQuery, (__bridge CFDictionaryRef)update);
+    ApolloLog(@"[KeychainSelfHeal] updated duplicate item in place service=%@ account=%@ status=%d",
+              query[(__bridge id)kSecAttrService], query[(__bridge id)kSecAttrAccount], (int)status);
+    return status == errSecSuccess;
+}
+
+// Last resort if the update above fails. Deletes the local copy first -- deleting a
+// synced item propagates through iCloud Keychain to every device on the account.
+static void ApolloDeleteStaleKeychainItem(NSDictionary *query) {
+    NSMutableDictionary *deleteQuery = ApolloSelfHealSearchQuery(query);
+    deleteQuery[(__bridge id)kSecAttrSynchronizable] = (__bridge id)kCFBooleanFalse;
+    OSStatus status = SecItemDelete((__bridge CFDictionaryRef)deleteQuery);
+    if (status == errSecItemNotFound) {
+        deleteQuery[(__bridge id)kSecAttrSynchronizable] = (__bridge id)kSecAttrSynchronizableAny;
+        status = SecItemDelete((__bridge CFDictionaryRef)deleteQuery);
+    }
+    ApolloLog(@"[KeychainSelfHeal] deleted stale duplicate item service=%@ account=%@ status=%d",
+              query[(__bridge id)kSecAttrService], query[(__bridge id)kSecAttrAccount], (int)status);
+}
+
 static void *SecItemAdd_orig;
 static OSStatus SecItemAdd_replacement(CFDictionaryRef query, CFTypeRef *result) {
     NSDictionary *strippedQuery = stripGroupAccessAttr(query);
@@ -177,10 +252,19 @@ static OSStatus SecItemAdd_replacement(CFDictionaryRef query, CFTypeRef *result)
         return errSecSuccess;
     }
 #endif
-    return ((OSStatus (*)(CFDictionaryRef, CFTypeRef *))SecItemAdd_orig)((__bridge CFDictionaryRef)strippedQuery, result);
+    OSStatus status = ((OSStatus (*)(CFDictionaryRef, CFTypeRef *))SecItemAdd_orig)((__bridge CFDictionaryRef)strippedQuery, result);
+    if (status == errSecDuplicateItem && IsValetQuery(strippedQuery)) {
+        if (ApolloExistingKeychainItemHasSameValue(strippedQuery) ||
+            ApolloUpdateStaleKeychainItem(strippedQuery)) {
+            if (result) ApolloCopyExistingKeychainItem(strippedQuery, result);
+            return errSecSuccess;
+        }
+        ApolloDeleteStaleKeychainItem(strippedQuery);
+        status = ((OSStatus (*)(CFDictionaryRef, CFTypeRef *))SecItemAdd_orig)((__bridge CFDictionaryRef)strippedQuery, result);
+    }
+    return status;
 }
 
-static void *SecItemCopyMatching_orig;
 static OSStatus SecItemCopyMatching_replacement(CFDictionaryRef query, CFTypeRef *result) {
     NSDictionary *strippedQuery = stripGroupAccessAttr(query);
 
@@ -209,7 +293,16 @@ static OSStatus SecItemCopyMatching_replacement(CFDictionaryRef query, CFTypeRef
     }
 #endif
 
-    return ((OSStatus (*)(CFDictionaryRef, CFTypeRef *))SecItemCopyMatching_orig)((__bridge CFDictionaryRef)strippedQuery, result);
+    OSStatus status = ((OSStatus (*)(CFDictionaryRef, CFTypeRef *))SecItemCopyMatching_orig)((__bridge CFDictionaryRef)strippedQuery, result);
+    if (status == errSecItemNotFound && IsValetQuery(strippedQuery)) {
+        // Only fall back to the broadened (synced-included) read on a local miss, so a
+        // good local item always wins over a potentially stale synced one.
+        NSDictionary *broadened = ApolloQueryByBroadeningSynchronizable(strippedQuery);
+        if (broadened != strippedQuery) {
+            status = ((OSStatus (*)(CFDictionaryRef, CFTypeRef *))SecItemCopyMatching_orig)((__bridge CFDictionaryRef)broadened, result);
+        }
+    }
+    return status;
 }
 
 static void *SecItemUpdate_orig;
