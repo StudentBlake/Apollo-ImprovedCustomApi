@@ -109,6 +109,32 @@ static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadT
 // 🌐 = toggle title translation). Default ON via registerDefaults.
 // See ApolloStatsRowTouch.xm.
 static NSString *const UDKeyIconRowMagnifier = @"IconRowMagnifier";
+// Per-icon "is this info-row icon tappable" switches, exposed on the Info Row
+// settings sub-screen. Each defaults ON (registerDefaults) so behaviour matches
+// the shipped tweak. When a switch is OFF the icon does nothing on a direct tap
+// AND is skipped by the magnifier loupe (excluded from its target list):
+//   Upvote     — the ↑ score (activated via the loupe; % ratio is unaffected).
+//   Comments   — the direct comment-bubble tap that jumps to the comments; OFF
+//                reverts to a stock tap (opens the post at the top).
+//   Popup/Overlay — the display style shared by the three tappable "info" icons:
+//                % upvoted (smiley), timestamp (age), and edited (pencil), all of
+//                which reveal detail (a ratio or an absolute date). InfoRowPopupMode
+//                shows the dismissable alert; InfoRowOverlayMode instead flashes a
+//                small theme-bordered card just above the icon that fades on its own
+//                after ~2s. Mutually exclusive; both off = those three icons are
+//                inert (the % / edited native popups are taken over and suppressed).
+//   Translation— the 🌐 marker tap beside a post's stats (feed title + comments
+//                header) that toggles the title translation (ApolloTranslation.xm,
+//                ApolloFeedMarkerTapTarget). Takes priority over Tap to Translate
+//                / title Details: even with those on, OFF keeps the marker visible
+//                but inert. Does NOT affect the inline "Translate" line under
+//                comment/self-post body text. Faded on the settings screen until a
+//                marker can appear (Tap to Translate or a Details toggle enabled).
+static NSString *const UDKeyInfoRowTapUpvote = @"InfoRowTapUpvote";
+static NSString *const UDKeyInfoRowTapComments = @"InfoRowTapComments";
+static NSString *const UDKeyInfoRowPopupMode = @"InfoRowPopupMode";       // %/time/edited → popup alert
+static NSString *const UDKeyInfoRowOverlayMode = @"InfoRowOverlayMode";   // %/time/edited → transient overlay
+static NSString *const UDKeyInfoRowTapTranslation = @"InfoRowTapTranslation";
 static NSString *const UDKeyLiveCommentsFollow = @"LiveCommentsFollow";
 // Per-POST comment sort memory (issue #555). When ON, changing a post's comment sort
 // is remembered for that post (capped LRU mapping below) and restored when its

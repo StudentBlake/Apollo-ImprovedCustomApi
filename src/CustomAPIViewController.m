@@ -14,6 +14,7 @@
 #import "ApolloDeletedCommentsSettingsViewController.h"
 #import "ApolloLinkPreviewSettingsViewController.h"
 #import "InlineMediaSettingsViewController.h"
+#import "InfoRowSettingsViewController.h"
 #import "ApolloOpenInAppViewController.h"
 #import "ApolloSubredditCustomBannerCache.h"
 #import "ApolloSubredditCustomIconCache.h"
@@ -34,6 +35,7 @@ typedef NS_ENUM(NSInteger, SectionIndex) {
     SectionBackupRestore = 0,
     SectionAPIKeys,
     SectionGeneral,
+    SectionInfoRow,       // single row -> InfoRowSettingsViewController
     SectionApolloAI,
     SectionInlineMedia,   // single row -> InlineMediaSettingsViewController
     SectionLinkPreviews,
@@ -576,6 +578,52 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
 }
 
+// One-line state summary shown under the "Info Row" disclosure row: magnifier
+// state, the detail-icon display style (Popups / Overlays / off), then any action
+// icons the user turned off. Translation only counts as "off" when a marker is
+// actually available (otherwise it's faded, not a deliberate choice).
+- (NSString *)infoRowSummaryText {
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    [parts addObject:sIconRowMagnifier ? @"Magnifier on" : @"Magnifier off"];
+    [parts addObject:sInfoRowOverlayMode ? @"Overlays" : sInfoRowPopupMode ? @"Popups" : @"Info taps off"];
+
+    NSMutableArray<NSString *> *off = [NSMutableArray array];
+    if (!sInfoRowTapUpvote) [off addObject:@"Upvote"];
+    if (!sInfoRowTapComments) [off addObject:@"Comments"];
+    BOOL translationAvailable = sTapToTranslate || sShowTranslationTitleDetails || sShowTranslationDetails;
+    if (translationAvailable && !sInfoRowTapTranslation) [off addObject:@"Translation"];
+    if (off.count) [parts addObject:[NSString stringWithFormat:@"%@ off", [off componentsJoinedByString:@", "]]];
+    return [parts componentsJoinedByString:@" · "];
+}
+
+- (UITableViewCell *)infoRowCellForTableView:(UITableView *)tableView {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_InfoRow"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                      reuseIdentifier:@"Cell_InfoRow"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    cell.textLabel.text = @"Info Row Settings";
+    cell.detailTextLabel.text = [self infoRowSummaryText];
+    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+    cell.detailTextLabel.numberOfLines = 0;
+    cell.detailTextLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    return cell;
+}
+
+- (void)openInfoRowSettings {
+    InfoRowSettingsViewController *vc =
+        [[InfoRowSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    if (self.navigationController) {
+        [self.navigationController pushViewController:vc animated:YES];
+    } else {
+        UINavigationController *navigation =
+            [[UINavigationController alloc] initWithRootViewController:vc];
+        [self presentViewController:navigation animated:YES completion:nil];
+    }
+}
+
 - (UITableViewCell *)deletedCommentsCellForTableView:(UITableView *)tableView {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Gen_DeletedComments"];
     if (!cell) {
@@ -644,9 +692,9 @@ typedef NS_ENUM(NSInteger, Tag) {
         [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:kAPIKeyRowWebSessionLogin inSection:SectionAPIKeys]]
                               withRowAnimation:UITableViewRowAnimationNone];
     }
-    // Refresh the Apollo AI and Rich Link Previews status subtitles after returning
-    // from their subviews.
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(SectionApolloAI, 3)]
+    // Refresh the Info Row, Apollo AI, Inline Media and Rich Link Previews status
+    // subtitles after returning from their subviews.
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(SectionInfoRow, 4)]
                   withRowAnimation:UITableViewRowAnimationNone];
 }
 
@@ -700,7 +748,8 @@ typedef NS_ENUM(NSInteger, Tag) {
         // disclosure row (row 7). Includes the keep-search-in-place,
         // follow-live-comments, iPad-tab-bar-bottom and icon-row-magnifier
         // toggles. No conditional rows remain, so the count is constant.
-        case SectionGeneral: return 14;
+        case SectionGeneral: return 13;   // magnifier row moved to the Info Row sub-screen
+        case SectionInfoRow: return 1;
         case SectionApolloAI: return 1;
         case SectionInlineMedia: return 1;
         case SectionLinkPreviews: return 1;
@@ -723,6 +772,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return @"Data";
         case SectionAPIKeys: return @"API Keys";
         case SectionGeneral: return @"General";
+        case SectionInfoRow: return @"Info Row";
         case SectionApolloAI: return @"Apollo AI";
         case SectionInlineMedia: return @"Inline Media";
         case SectionLinkPreviews: return @"Rich Link Previews";
@@ -741,6 +791,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: cell = [self backupRestoreCellForRow:indexPath.row tableView:tableView]; break;
         case SectionAPIKeys: cell = [self apiKeyCellForRow:indexPath.row tableView:tableView]; break;
         case SectionGeneral: cell = [self generalCellForRow:indexPath.row tableView:tableView]; break;
+        case SectionInfoRow: cell = [self infoRowCellForTableView:tableView]; break;
         case SectionApolloAI: cell = [self apolloAICellForTableView:tableView]; break;
         case SectionInlineMedia: cell = [self inlineMediaCellForTableView:tableView]; break;
         case SectionLinkPreviews: cell = [self linkPreviewsCellForTableView:tableView]; break;
@@ -1204,12 +1255,8 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.enabled = supported;
             return cell;
         }
-        case 13:
-            return [self switchCellWithIdentifier:@"Cell_Gen_IconRowMagnifier"
-                                            label:@"Magnify Info Row on Hold"
-                                           detail:@"Press and hold a post's info row (score, comments, time…) to magnify the icons and slide to the one you want."
-                                               on:[defaults boolForKey:UDKeyIconRowMagnifier]
-                                           action:@selector(iconRowMagnifierSwitchToggled:)];
+        // The "Magnify Info Row on Hold" toggle moved to the Info Row sub-screen
+        // (SectionInfoRow), alongside the per-icon tap switches.
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -1817,6 +1864,11 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
+    if (indexPath.section == SectionInfoRow) {
+        [self openInfoRowSettings];
+        return;
+    }
+
     if (indexPath.section == SectionApolloAI) {
         [self openApolloAISettings];
         return;
@@ -2007,6 +2059,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         if (row == kAPIKeyRowTroubleshooting || row == kAPIKeyRowSetupGuide ||
             row == kAPIKeyRowWebSessionLogin || row == kAPIKeyRowWidgetSetupCode) return YES;
     }
+    if (indexPath.section == SectionInfoRow) return YES;
     if (indexPath.section == SectionApolloAI) return YES;
     if (indexPath.section == SectionInlineMedia) return YES;
     if (indexPath.section == SectionLinkPreviews) return YES;
@@ -2554,10 +2607,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sKeepSearchBarInPlace forKey:UDKeyKeepSearchBarInPlace];
 }
 
-- (void)iconRowMagnifierSwitchToggled:(UISwitch *)sender {
-    sIconRowMagnifier = sender.isOn;
-    [[NSUserDefaults standardUserDefaults] setBool:sIconRowMagnifier forKey:UDKeyIconRowMagnifier];
-}
+// The magnifier toggle moved to InfoRowSettingsViewController (SectionInfoRow),
+// which owns its own switch handler; the old inline handler is gone with it.
 
 - (void)liveCommentsFollowSwitchToggled:(UISwitch *)sender {
     sLiveCommentsFollow = sender.isOn;

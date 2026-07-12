@@ -1674,6 +1674,11 @@ static void initializeRandomSources() {
                                     UDKeyKeepSearchBarInPlace: @NO,
                                     UDKeyIPadTabBarBottom: @NO,
                                     UDKeyIconRowMagnifier: @YES,
+                                    UDKeyInfoRowTapUpvote: @YES,
+                                    UDKeyInfoRowTapComments: @YES,
+                                    UDKeyInfoRowPopupMode: @YES,
+                                    UDKeyInfoRowOverlayMode: @NO,
+                                    UDKeyInfoRowTapTranslation: @YES,
                                     UDKeyLiveCommentsFollow: @YES,
                                     UDKeyPerPostCommentSort: @NO,
                                     UDKeyEnableBulkTranslation: @NO,
@@ -1816,6 +1821,16 @@ static void initializeRandomSources() {
     sKeepSearchBarInPlace = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeepSearchBarInPlace];
     sIPadTabBarBottom = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadTabBarBottom];
     sIconRowMagnifier = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIconRowMagnifier];
+    sInfoRowTapUpvote = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapUpvote];
+    sInfoRowTapComments = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapComments];
+    sInfoRowPopupMode = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowPopupMode];
+    sInfoRowOverlayMode = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowOverlayMode];
+    // Popup and Overlay are mutually exclusive. The settings UI enforces this, but
+    // normalize on load too so a corrupt/migrated both-on state can't soft-lock
+    // those rows (both would render disabled). Overlay wins — the runtime prefers
+    // it (ApolloInfoTapFired / SRTActivateTarget check it first).
+    if (sInfoRowPopupMode && sInfoRowOverlayMode) sInfoRowPopupMode = NO;
+    sInfoRowTapTranslation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapTranslation];
     sLiveCommentsFollow = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyLiveCommentsFollow];
     sPerPostCommentSort = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPerPostCommentSort];
     // Both sort memories on = stale state from an older build or a restored backup;
