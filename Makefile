@@ -77,6 +77,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloRecentlyRead.xm \
     $(SRC_DIR)/ApolloHideLinksBatchFix.xm \
     $(SRC_DIR)/ApolloSavedCategories.xm \
+    $(SRC_DIR)/ApolloSwiftIvarBridge.swift \
     $(SRC_DIR)/ApolloUserFlair.xm \
     $(SRC_DIR)/ApolloFlairColors.xm \
     $(SRC_DIR)/ApolloNativeActionMenus.xm \
