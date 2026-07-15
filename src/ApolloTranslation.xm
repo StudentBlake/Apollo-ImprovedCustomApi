@@ -1689,10 +1689,51 @@ static id ApolloBestCommentTextNode(id commentCellNode, RDKComment *comment) {
     return bestNode;
 }
 
+// One deferred, per-table-coalesced empty begin/endUpdates: re-queries row heights and
+// re-measures only nodes whose calculated layout was invalidated. Mirrors the
+// link-preview module's coalesced height refresh (#630 rounds 6-7).
+static char kApolloTranslationHeightCommitPendingKey;
+static void ApolloTranslationScheduleHostHeightCommit(id cellNode) {
+    if (!cellNode) return;
+    UIView *cellView = nil;
+    @try {
+        if ([cellNode respondsToSelector:@selector(isNodeLoaded)] &&
+            !((BOOL (*)(id, SEL))objc_msgSend)(cellNode, @selector(isNodeLoaded))) {
+            return; // off-screen: the next display pass measures with the invalidated layout
+        }
+        if ([cellNode isKindOfClass:[UIView class]]) {
+            cellView = (UIView *)cellNode;
+        } else if ([cellNode respondsToSelector:@selector(view)]) {
+            cellView = ((UIView *(*)(id, SEL))objc_msgSend)(cellNode, @selector(view));
+        }
+    } @catch (__unused NSException *e) { return; }
+
+    UITableView *tableView = nil;
+    for (UIView *current = cellView; current; current = current.superview) {
+        if ([current isKindOfClass:[UITableView class]]) { tableView = (UITableView *)current; break; }
+    }
+    if (!tableView || !tableView.window) return;
+    if (objc_getAssociatedObject(tableView, &kApolloTranslationHeightCommitPendingKey)) return;
+    objc_setAssociatedObject(tableView, &kApolloTranslationHeightCommitPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    __weak UITableView *weakTableView = tableView;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UITableView *strongTableView = weakTableView;
+        if (!strongTableView) return;
+        objc_setAssociatedObject(strongTableView, &kApolloTranslationHeightCommitPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!strongTableView.window) return;
+        @try {
+            [UIView performWithoutAnimation:^{
+                [strongTableView beginUpdates];
+                [strongTableView endUpdates];
+            }];
+        } @catch (__unused NSException *e) {}
+    });
+}
+
 static void ApolloForceRelayoutForTextNodeAndOwner(id owner, id textNode) {
     SEL invalidateSel = NSSelectorFromString(@"invalidateCalculatedLayout");
     SEL supernodeSel = NSSelectorFromString(@"supernode");
-    SEL transitionSel = NSSelectorFromString(@"transitionLayoutWithAnimation:shouldMeasureAsync:measurementCompletion:");
 
     void (^nudgeObject)(id) = ^(id object) {
         if (!object) return;
@@ -1731,23 +1772,13 @@ static void ApolloForceRelayoutForTextNodeAndOwner(id owner, id textNode) {
     }
     if (!cellNode) cellNode = owner;
 
-    @try {
-        if ([cellNode respondsToSelector:transitionSel]) {
-            NSMethodSignature *sig = [cellNode methodSignatureForSelector:transitionSel];
-            if (sig) {
-                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-                inv.target = cellNode;
-                inv.selector = transitionSel;
-                BOOL animated = NO;
-                BOOL async = NO;
-                void (^completion)(void) = nil;
-                [inv setArgument:&animated atIndex:2];
-                [inv setArgument:&async atIndex:3];
-                [inv setArgument:&completion atIndex:4];
-                [inv invoke];
-            }
-        }
-    } @catch (__unused NSException *e) {}
+    // This used to finish with transitionLayoutWithAnimation:NO shouldMeasureAsync:NO on
+    // the CELL node — a synchronous full-subtree measure on the main thread, fired per
+    // translated comment and looped over every visible cell on globe toggles. Same
+    // primitive as the round-7 link-preview watchdog freeze (#630), same replacement:
+    // the invalidate walk above marks the nodes dirty for the next layout pass, and a
+    // coalesced begin/endUpdates commits the new row heights lazily.
+    ApolloTranslationScheduleHostHeightCommit(cellNode);
 }
 
 // Anti-flicker heal for translation text swaps. setAttributedText: +
@@ -7970,8 +8001,13 @@ static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
 
     if (!sEnableBulkTranslation) return;
 
+    // Weak capture: Logos `self` is __unsafe_unretained, and preload/scroll churn
+    // deallocates cells before the main queue drains (#630 round-5 crashes 2+3 —
+    // their stacks show this block tail-calling into MaybeTranslate with a dead cell).
+    __weak __typeof__(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        ApolloMaybeTranslateCommentCellNode((id)self, NO);
+        __typeof__(self) cellNode = weakSelf;
+        if (cellNode) ApolloMaybeTranslateCommentCellNode((id)cellNode, NO);
     });
 }
 
@@ -7980,8 +8016,10 @@ static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
 
     if (!sEnableBulkTranslation) return;
 
+    __weak __typeof__(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        ApolloMaybeTranslateCommentCellNode((id)self, NO);
+        __typeof__(self) cellNode = weakSelf;
+        if (cellNode) ApolloMaybeTranslateCommentCellNode((id)cellNode, NO);
     });
 }
 
@@ -8000,19 +8038,27 @@ static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
     // original text reappears as the cell scrolls back into view.
     if (!sEnableBulkTranslation) return;
 
+    // Logos hook `self` is __unsafe_unretained: capturing it in an async block does
+    // NOT keep the cell alive, and a comment collapse deletes rows (deallocating
+    // their cells) before the main queue drains — the block then ran against a
+    // dangling pointer (objc_retain SIGSEGV, #630 round-5 crash reports). Take a
+    // weak reference and bail if the cell died; a dead cell needs no re-translation.
+    __weak __typeof__(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *owningVC = ApolloOwningCommentsVCForCellNode((id)self);
+        __typeof__(self) cellNode = weakSelf;
+        if (!cellNode) return;
+        UIViewController *owningVC = ApolloOwningCommentsVCForCellNode((id)cellNode);
         if (ApolloControllerIsInTranslatedMode(owningVC)) {
-            if (!ApolloReapplyCachedTranslationForCellNode((id)self)) {
-                ApolloMaybeTranslateCommentCellNode((id)self, NO);
+            if (!ApolloReapplyCachedTranslationForCellNode((id)cellNode)) {
+                ApolloMaybeTranslateCommentCellNode((id)cellNode, NO);
             }
         } else if (ApolloControllerIsConfirmedOriginalMode(owningVC)) {
             // Only restore if the owning VC is confirmed to be in original
             // mode. If the VC is unknown (lifecycle race), defer — the
             // viewDidAppear retries will translate the cell shortly.
-            RDKComment *comment = ApolloCommentFromCellNode((id)self);
+            RDKComment *comment = ApolloCommentFromCellNode((id)cellNode);
             if (comment) {
-                ApolloRestoreOriginalForCellNode((id)self, comment);
+                ApolloRestoreOriginalForCellNode((id)cellNode, comment);
             }
         }
     });
@@ -8028,15 +8074,20 @@ static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
     // that's still sitting on the text node from before the toggle-off.
     if (!sEnableBulkTranslation || event != 0) return;
 
+    // Weak capture for the same reason as didEnterDisplayState above: an async
+    // block holding the raw Logos `self` outlives cells killed by collapse/scroll.
+    __weak __typeof__(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *owningVC = ApolloOwningCommentsVCForCellNode((id)self);
+        __typeof__(self) cellNode = weakSelf;
+        if (!cellNode) return;
+        UIViewController *owningVC = ApolloOwningCommentsVCForCellNode((id)cellNode);
         if (ApolloControllerIsInTranslatedMode(owningVC)) {
-            ApolloReapplyCachedTranslationForCellNode((id)self);
+            ApolloReapplyCachedTranslationForCellNode((id)cellNode);
         } else if (ApolloControllerIsConfirmedOriginalMode(owningVC)) {
             // Same defer-on-unknown rule as didEnterDisplayState above.
-            RDKComment *comment = ApolloCommentFromCellNode((id)self);
+            RDKComment *comment = ApolloCommentFromCellNode((id)cellNode);
             if (comment) {
-                ApolloRestoreOriginalForCellNode((id)self, comment);
+                ApolloRestoreOriginalForCellNode((id)cellNode, comment);
             }
         }
     });
