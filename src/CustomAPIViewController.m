@@ -15,6 +15,7 @@
 #import "ApolloDeletedCommentsSettingsViewController.h"
 #import "ApolloLinkPreviewSettingsViewController.h"
 #import "InlineMediaSettingsViewController.h"
+#import "ApolloPollSettingsViewController.h"
 #import "InfoRowSettingsViewController.h"
 #import "ApolloOpenInAppViewController.h"
 #import "ApolloSubredditCustomBannerCache.h"
@@ -39,6 +40,7 @@ typedef NS_ENUM(NSInteger, SectionIndex) {
     SectionInfoRow,       // single row -> InfoRowSettingsViewController
     SectionApolloAI,
     SectionInlineMedia,   // single row -> InlineMediaSettingsViewController
+    SectionPolls,         // single row -> ApolloPollSettingsViewController
     SectionLinkPreviews,
     SectionMedia,
     SectionSubreddits,
@@ -761,6 +763,31 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
 }
 
+- (UITableViewCell *)pollsCellForTableView:(UITableView *)tableView {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Polls"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Polls"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    cell.textLabel.text = @"Polls";
+    cell.detailTextLabel.text = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPollsEnabled] ? @"On" : @"Off";
+    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+    return cell;
+}
+
+- (void)openPollSettings {
+    ApolloPollSettingsViewController *vc =
+        [[ApolloPollSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    if (self.navigationController) {
+        [self.navigationController pushViewController:vc animated:YES];
+    } else {
+        UINavigationController *navigation =
+            [[UINavigationController alloc] initWithRootViewController:vc];
+        [self presentViewController:navigation animated:YES completion:nil];
+    }
+}
+
 // One-line state summary shown under the "Info Row" disclosure row: magnifier
 // state, the detail-icon display style (Popups / Overlays / off), then any action
 // icons the user turned off. Translation only counts as "off" when a marker is
@@ -900,9 +927,10 @@ typedef NS_ENUM(NSInteger, Tag) {
     if (![[self apollo_currentAPIKeysSignature] isEqualToString:(_apollo_lastAPIKeysSignature ?: @"")]) {
         [self apollo_reloadAPIKeysSection];
     }
-    // Refresh the Info Row, Apollo AI, Inline Media and Rich Link Previews status
-    // subtitles after returning from their subviews.
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(SectionInfoRow, 4)]
+    // Refresh the Info Row, Apollo AI, Inline Media, Polls and Rich Link Previews
+    // status subtitles after returning from their subviews. These five sections are
+    // contiguous (SectionInfoRow ... SectionLinkPreviews), so a single range covers them.
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(SectionInfoRow, 5)]
                   withRowAnimation:UITableViewRowAnimationNone];
 }
 
@@ -960,6 +988,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionInfoRow: return 1;
         case SectionApolloAI: return 1;
         case SectionInlineMedia: return 1;
+        case SectionPolls: return 1;
         case SectionLinkPreviews: return 1;
         // Media base rows. The inline-media rows (Previews toggle, Alignment,
         // Autoplay Inline GIFs) and "Inline Media in Chat" moved to the Inline
@@ -987,6 +1016,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionInfoRow: return @"Info Row";
         case SectionApolloAI: return @"Apollo AI";
         case SectionInlineMedia: return @"Inline Media";
+        case SectionPolls: return @"Polls";
         case SectionLinkPreviews: return @"Rich Link Previews";
         case SectionMedia: return @"Media";
         case SectionSubreddits: return @"Subreddits";
@@ -1006,6 +1036,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionInfoRow: cell = [self infoRowCellForTableView:tableView]; break;
         case SectionApolloAI: cell = [self apolloAICellForTableView:tableView]; break;
         case SectionInlineMedia: cell = [self inlineMediaCellForTableView:tableView]; break;
+        case SectionPolls: cell = [self pollsCellForTableView:tableView]; break;
         case SectionLinkPreviews: cell = [self linkPreviewsCellForTableView:tableView]; break;
         case SectionMedia: cell = [self mediaCellForRow:indexPath.row tableView:tableView]; break;
         case SectionSubreddits: cell = [self subredditCellForRow:indexPath.row tableView:tableView]; break;
@@ -2130,6 +2161,11 @@ typedef NS_ENUM(NSInteger, Tag) {
         return;
     }
 
+    if (indexPath.section == SectionPolls) {
+        [self openPollSettings];
+        return;
+    }
+
     if (indexPath.section == SectionLinkPreviews) {
         [self openLinkPreviewSettings];
         return;
@@ -2321,6 +2357,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     if (indexPath.section == SectionInfoRow) return YES;
     if (indexPath.section == SectionApolloAI) return YES;
     if (indexPath.section == SectionInlineMedia) return YES;
+    if (indexPath.section == SectionPolls) return YES;
     if (indexPath.section == SectionLinkPreviews) return YES;
     if (indexPath.section == SectionGeneral) {
         // Only the "Deleted Comments" (row 3) and "Open in App" (row 7)
