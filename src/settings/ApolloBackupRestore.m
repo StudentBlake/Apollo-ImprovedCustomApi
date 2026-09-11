@@ -1,6 +1,7 @@
 #import "settings/ApolloBackupRestore.h"
 
 #import "ApolloCommon.h"
+#import "ApolloAICloudBridge.h"
 #import "ApolloPerAccountFavorites.h"
 #import "ApolloState.h"
 #import "ApolloTranslation.h"
@@ -425,20 +426,23 @@ BOOL ApolloBackupRestoreRestoreFromZipURL(NSURL *zipURL, NSString **outErrorTitl
     // branch persists "google" back to defaults, which would corrupt a restored
     // Microsoft selection before the relaunch.
 
+    // A backup exported by a pre-#674 build carries the legacy single-endpoint
+    // cloud keys. The domain was wiped before replay, so the migration marker is
+    // gone too and this re-migrates them onto the per-provider keys — matching
+    // what %ctor would do on the post-restore relaunch, so the statics below
+    // are correct either way.
+    ApolloAIMigrateLegacyCloudKeys();
     // AI summary backend + per-provider cloud credentials (same sanitize rules
     // as the launch-time load in Tweak.xm: unknown provider → apple, empty → nil).
     NSString *aiProvider = [defaults stringForKey:UDKeyAISummaryProvider];
-    if ([aiProvider isEqualToString:@"openrouter"] || [aiProvider isEqualToString:@"gemini"] ||
-        [aiProvider isEqualToString:@"custom"] || [aiProvider isEqualToString:@"apple"]) {
-        sAISummaryProvider = aiProvider;
-    } else {
-        sAISummaryProvider = @"apple";
-    }
+    sAISummaryProvider = ApolloAIProviderIsKnown(aiProvider) ? aiProvider : @"apple";
     NSString *(^aiKey)(NSString *) = ^NSString *(NSString *udKey) {
         NSString *v = [[defaults stringForKey:udKey] stringByTrimmingCharactersInSet:
                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
         return v.length > 0 ? v : nil;
     };
+    sOpenAIAPIKey = aiKey(UDKeyOpenAIAPIKey);
+    sOpenAIAIModel = aiKey(UDKeyOpenAIAIModel);
     sOpenRouterAPIKey = aiKey(UDKeyOpenRouterAPIKey);
     sOpenRouterAIModel = aiKey(UDKeyOpenRouterAIModel);
     sGeminiAPIKey = aiKey(UDKeyGeminiAPIKey);

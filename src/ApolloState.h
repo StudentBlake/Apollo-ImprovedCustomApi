@@ -351,8 +351,11 @@ extern BOOL sEnableTapToSummarize;      // generate only on tap (off = automatic
 extern BOOL sEnableAIAutoExpandSummaries; // auto-open a summary card once it's ready (off = stay collapsed)
 // AI summary backend selection + per-provider cloud credentials (see
 // UserDefaultConstants.h). sAISummaryProvider is always one of
-// apple|openrouter|gemini|custom (sanitized on load); the rest are nil when unset.
+// apple|openai|openrouter|gemini|custom (sanitized on load); the rest are nil
+// when unset.
 extern NSString *sAISummaryProvider;
+extern NSString *sOpenAIAPIKey;
+extern NSString *sOpenAIAIModel;
 extern NSString *sOpenRouterAPIKey;
 extern NSString *sOpenRouterAIModel;
 extern NSString *sGeminiAPIKey;
@@ -370,8 +373,8 @@ typedef NS_ENUM(NSInteger, ApolloAISummaryDetail) {
     ApolloAISummaryDetailInDepth = 2,
 };
 extern NSInteger sAIPostWordThreshold;              // 50...300, step 50
-extern ApolloAISummaryDetail sAIPostSummaryDetail;  // post / link / both
-extern ApolloAISummaryDetail sAICommentSummaryDetail;
+extern ApolloAISummaryDetail sAIPostSummaryDetail;  // detail level for post/link summaries
+extern ApolloAISummaryDetail sAICommentSummaryDetail;  // detail level for discussion summaries
 
 // Horizontal alignment for inline media containers narrower than the row width
 // (tall portrait images, height-capped images). Has no effect on full-width media.

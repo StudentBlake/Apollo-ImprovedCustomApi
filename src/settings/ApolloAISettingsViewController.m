@@ -41,6 +41,32 @@ static BOOL ApolloAIGeminiModelLooksLikeTextChat(NSString *modelID) {
     return YES;
 }
 
+// OpenAI's /v1/models is the whole account catalog — embeddings, TTS, Whisper,
+// image and moderation models all sit alongside the chat ones, so an unfiltered
+// picker would be mostly unusable entries. Allowlist the chat families, then
+// drop the modality-specific variants inside them (gpt-4o-audio-preview,
+// gpt-4o-realtime-preview, gpt-4o-transcribe, …).
+static BOOL ApolloAIOpenAIModelLooksLikeTextChat(NSString *modelID) {
+    NSString *lower = modelID.lowercaseString;
+    BOOL chatFamily = [lower hasPrefix:@"gpt-"] || [lower hasPrefix:@"chatgpt-"];
+    if (!chatFamily && lower.length >= 2 && [lower characterAtIndex:0] == 'o') {
+        // o-series reasoning models (o1, o3-mini, o4-mini…). Explicit digit
+        // bounds — isdigit() on a unichar outside unsigned char is UB.
+        unichar second = [lower characterAtIndex:1];
+        chatFamily = second >= '0' && second <= '9';
+    }
+    if (!chatFamily) return NO;
+    // "-instruct" on OpenAI means the legacy completions endpoint, which the
+    // chat-completions summariser cannot call. (Only excluded here, not for
+    // OpenRouter, where "instruct" routinely names a chat model.)
+    for (NSString *needle in @[@"embedding", @"image", @"audio", @"realtime", @"transcribe",
+                                @"tts", @"whisper", @"moderation", @"search-preview",
+                                @"dall-e", @"instruct"]) {
+        if ([lower containsString:needle]) return NO;
+    }
+    return YES;
+}
+
 static NSString *ApolloAIGeminiModelBadge(NSString *modelID) {
     NSString *lower = modelID.lowercaseString;
     if ([lower containsString:@"experimental"] || [lower containsString:@"-exp-"] ||
@@ -191,8 +217,9 @@ static UIView *ApolloAIModelAccessory(NSString *badge, BOOL selected, UIColor *f
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = [self.provider isEqualToString:@"openrouter"]
-        ? @"OpenRouter Models" : @"Gemini Models";
+    if ([self.provider isEqualToString:@"openrouter"]) self.title = @"OpenRouter Models";
+    else if ([self.provider isEqualToString:@"openai"]) self.title = @"OpenAI Models";
+    else self.title = @"Gemini Models";
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58.0;
 
@@ -261,6 +288,8 @@ static UIView *ApolloAIModelAccessory(NSString *badge, BOOL selected, UIColor *f
     } else if ([self.provider isEqualToString:@"openrouter"]) {
         // The user-scoped endpoint respects their provider/privacy preferences.
         url = [NSURL URLWithString:@"https://openrouter.ai/api/v1/models/user"];
+    } else if ([self.provider isEqualToString:@"openai"]) {
+        url = [NSURL URLWithString:@"https://api.openai.com/v1/models"];
     }
     if (!url || self.apiKey.length == 0) {
         [self.refreshControl endRefreshing];
@@ -291,6 +320,8 @@ static UIView *ApolloAIModelAccessory(NSString *badge, BOOL selected, UIColor *f
                 if (modelID.length == 0) continue;
                 if ([weakSelf.provider isEqualToString:@"gemini"] &&
                     !ApolloAIGeminiModelLooksLikeTextChat(modelID)) continue;
+                if ([weakSelf.provider isEqualToString:@"openai"] &&
+                    !ApolloAIOpenAIModelLooksLikeTextChat(modelID)) continue;
                 if ([weakSelf.provider isEqualToString:@"gemini"] && [modelID hasPrefix:@"models/"]) {
                     modelID = [modelID substringFromIndex:7];
                 }
@@ -315,7 +346,7 @@ static UIView *ApolloAIModelAccessory(NSString *badge, BOOL selected, UIColor *f
                     NSDictionary *pricing = [raw[@"pricing"] isKindOfClass:[NSDictionary class]]
                         ? raw[@"pricing"] : nil;
                     badge = ApolloAIOpenRouterPricingIsFree(modelID, pricing) ? @"Free" : @"Paid";
-                } else {
+                } else if ([weakSelf.provider isEqualToString:@"gemini"]) {
                     badge = ApolloAIGeminiModelBadge(modelID);
                 }
                 NSMutableDictionary *model = [@{ @"id": modelID, @"name": name } mutableCopy];
@@ -334,6 +365,13 @@ static UIView *ApolloAIModelAccessory(NSString *badge, BOOL selected, UIColor *f
                     if (![model[@"badge"] isEqualToString:@"Free"]) [ordered addObject:model];
                 }
                 parsed = ordered;
+            } else if ([weakSelf.provider isEqualToString:@"openai"]) {
+                // OpenAI returns the account catalog in creation order, which
+                // interleaves families. Gemini and OpenRouter both arrive
+                // curated; this one has to be sorted to be browsable.
+                [parsed sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                    return [a[@"id"] localizedStandardCompare:b[@"id"]];
+                }];
             }
         }
 
@@ -411,6 +449,9 @@ static UIView *ApolloAIModelAccessory(NSString *badge, BOOL selected, UIColor *f
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if ([self.provider isEqualToString:@"openrouter"]) {
         return @"Free and Paid labels use OpenRouter’s current live pricing. Free-model availability and rate limits can vary.";
+    }
+    if ([self.provider isEqualToString:@"openai"]) {
+        return @"Your account’s available models, filtered to the chat-capable ones. Non-chat models (embeddings, speech, image) are omitted because summaries use the chat-completions endpoint.";
     }
     return @"Google does not report per-model free-tier eligibility in its model catalog. Preview, Experimental, and Latest labels describe model lifecycle only.";
 }
@@ -847,16 +888,19 @@ typedef NS_ENUM(NSInteger, ApolloAIFieldTag) {
     ApolloAIFieldTagBaseURL,
 };
 
-// The backends summaries can be generated by, in picker order.
+// The backends summaries can be generated by, in picker order. "openai" is this
+// fork's addition — it was the only cloud backend before #674, so it stays a
+// first-class preset rather than something users must rebuild under "custom".
 static NSArray<NSString *> *ApolloAIProviderIdentifiers(void) {
-    return @[ @"apple", @"openrouter", @"gemini", @"custom" ];
+    return @[ @"apple", @"openai", @"openrouter", @"gemini", @"custom" ];
 }
 
 static BOOL ApolloAIIsCloudProvider(void) {
-    return sAISummaryProvider.length > 0 && ![sAISummaryProvider isEqualToString:@"apple"];
+    return ApolloAICloudProviderSelected();
 }
 
 static NSString *ApolloAIProviderDisplayName(NSString *provider) {
+    if ([provider isEqualToString:@"openai"]) return @"OpenAI";
     if ([provider isEqualToString:@"openrouter"]) return @"OpenRouter";
     if ([provider isEqualToString:@"gemini"]) return @"Google Gemini";
     if ([provider isEqualToString:@"custom"]) return @"Custom";
@@ -866,6 +910,7 @@ static NSString *ApolloAIProviderDisplayName(NSString *provider) {
 // The stored API key / model for the ACTIVE provider (each provider keeps its
 // own pair, so switching back and forth never loses a key).
 static NSString *ApolloAIStoredAPIKey(void) {
+    if ([sAISummaryProvider isEqualToString:@"openai"]) return sOpenAIAPIKey;
     if ([sAISummaryProvider isEqualToString:@"openrouter"]) return sOpenRouterAPIKey;
     if ([sAISummaryProvider isEqualToString:@"gemini"]) return sGeminiAPIKey;
     if ([sAISummaryProvider isEqualToString:@"custom"]) return sCustomAIAPIKey;
@@ -873,6 +918,7 @@ static NSString *ApolloAIStoredAPIKey(void) {
 }
 
 static NSString *ApolloAIStoredModel(void) {
+    if ([sAISummaryProvider isEqualToString:@"openai"]) return sOpenAIAIModel;
     if ([sAISummaryProvider isEqualToString:@"openrouter"]) return sOpenRouterAIModel;
     if ([sAISummaryProvider isEqualToString:@"gemini"]) return sGeminiAIModel;
     if ([sAISummaryProvider isEqualToString:@"custom"]) return sCustomAIModel;
@@ -888,6 +934,9 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
     if (tag == ApolloAIFieldTagBaseURL) {
         sCustomAIBaseURL = stored;
         udKey = UDKeyCustomAIBaseURL;
+    } else if ([sAISummaryProvider isEqualToString:@"openai"]) {
+        if (tag == ApolloAIFieldTagAPIKey) { sOpenAIAPIKey = stored; udKey = UDKeyOpenAIAPIKey; }
+        else { sOpenAIAIModel = stored; udKey = UDKeyOpenAIAIModel; }
     } else if ([sAISummaryProvider isEqualToString:@"openrouter"]) {
         if (tag == ApolloAIFieldTagAPIKey) { sOpenRouterAPIKey = stored; udKey = UDKeyOpenRouterAPIKey; }
         else { sOpenRouterAIModel = stored; udKey = UDKeyOpenRouterAIModel; }
@@ -1093,8 +1142,11 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
         }
                                  onSelect:^{ [weakSelf presentModelPicker]; }];
     providerModels.visible = ^BOOL {
+        // "custom" is excluded: an arbitrary OpenAI-compatible server has no
+        // guaranteed /models endpoint to browse.
         return [sAISummaryProvider isEqualToString:@"openrouter"] ||
-            [sAISummaryProvider isEqualToString:@"gemini"];
+            [sAISummaryProvider isEqualToString:@"gemini"] ||
+            [sAISummaryProvider isEqualToString:@"openai"];
     };
     providerModels.configure = ^(UITableViewCell *cell) {
         BOOL enabled = ApolloAIStoredAPIKey().length > 0;
@@ -1123,6 +1175,14 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
             return ApolloAIIsCloudProvider() ? [weakSelf cloudAvailabilityText] : [weakSelf modelAvailabilityText];
         }
                                  onSelect:nil];
+    // valueRows share a reuse pool with summaryMode, whose configure block
+    // greys the label while the master switch is off — reset what it sets.
+    availability.configure = ^(UITableViewCell *cell) {
+        cell.textLabel.enabled = YES;
+        cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    };
 
     // Destructive action — the buttonRow kind would accent-tint the label, so
     // this stays a custom cell to keep the systemRed treatment.
@@ -1146,7 +1206,8 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
     if (ApolloAIIsCloudProvider()) {
         generalFooter = [NSString stringWithFormat:
             @"Summaries are generated by %@ using your API key — post and comment text (and fetched "
-            @"article text) is sent to that service. Your key is stored in Apollo's settings on this "
+            @"article text) is sent to that service. If it fails, Apollo falls back to on-device "
+            @"Apple Intelligence where available. Your key is stored in Apollo's settings on this "
             @"device, and is included in settings backups.", ApolloAIProviderDisplayName(sAISummaryProvider)];
     } else {
         generalFooter = @"Summaries are generated entirely on-device using Apple Intelligence — no post or comment text is sent to an external AI service. Summarizing a linked article does fetch that page from its source website, which happens automatically when you open a thread unless Tap to Summarize is on.";
@@ -1154,7 +1215,7 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
 
     NSString *providerFooter;
     if ([sAISummaryProvider isEqualToString:@"custom"]) {
-        providerFooter = @"Any OpenAI-compatible chat-completions service: enter its base URL (e.g. https://api.example.com/v1), an API key, and a model ID.";
+        providerFooter = @"Any OpenAI-compatible chat-completions service: enter its base URL (e.g. https://api.example.com/v1), an API key, and a model ID. The base URL must use HTTPS — plain HTTP is accepted only for local network addresses, since the request carries your key and the post text.";
     } else if (ApolloAIIsCloudProvider()) {
         providerFooter = @"Leave Model empty to use the suggested default. Cloud providers work on any iPhone — no Apple Intelligence required.";
     } else {
@@ -1214,6 +1275,10 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
         if (sCustomAIBaseURL.length == 0) return @"Base URL Required";
         if (ApolloAICloudEffectiveModel().length == 0) return @"Model Required";
     }
+    // Present but unusable: unparseable, or plain http:// to a non-local host
+    // (the request carries the API key and the post text, so that is refused).
+    // "Ready" here would hide exactly the problem the user came to find.
+    if (!ApolloAICloudBaseURLIsValid()) return @"Invalid Base URL";
     return @"Ready";
 }
 
@@ -1297,8 +1362,10 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
                               message:@"Enter your provider key before loading its model list."];
         return;
     }
+    // Must stay in step with the provider.models row's `visible` predicate.
     if (![sAISummaryProvider isEqualToString:@"openrouter"] &&
-        ![sAISummaryProvider isEqualToString:@"gemini"]) return;
+        ![sAISummaryProvider isEqualToString:@"gemini"] &&
+        ![sAISummaryProvider isEqualToString:@"openai"]) return;
 
     NSString *provider = [sAISummaryProvider copy];
     __weak __typeof(self) weakSelf = self;

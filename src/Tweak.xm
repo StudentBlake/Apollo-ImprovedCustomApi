@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <os/lock.h>
+#import <stdatomic.h>
 #import <sys/utsname.h>
 #import <Security/Security.h>
 #import <StoreKit/StoreKit.h>
@@ -10,6 +11,7 @@
 
 #import "fishhook.h"
 #import "ApolloCommon.h"
+#import "ApolloAICloudBridge.h"
 #import "ApolloRedditMediaUpload.h"
 #import "ApolloDeletedCommentsData.h"
 #import "ApolloImageUploadHost.h"
@@ -231,7 +233,7 @@ static void ApolloLoginDiag(NSString *fmt, ...) {
     va_start(args, fmt);
     NSString *line = [[NSString alloc] initWithFormat:fmt arguments:args];
     va_end(args);
-    ApolloLog(@"%@", line);
+    ApolloLogAlways(@"%@", line);
     ApolloAppendLoginDiag(line);
 }
 
@@ -667,7 +669,9 @@ static long ApolloExistingAccountBlobMaxLen(NSString *service, NSString *account
 // of it — the failed-read→destructive-write signature. Bypassed by the dev "disable recovery"
 // toggle so the raw wipe can still be reproduced on demand.
 static BOOL ApolloShouldBlockDestructiveAccountWrite(NSDictionary *query, NSData *newValue) {
-    if (ApolloDebugDisableRecovery()) return NO;
+    // Cheapest predicates first: this runs on every SecItemAdd and SecItemUpdate in the
+    // process, and everything except an account-family data write is decided by the two
+    // dictionary lookups below rather than by a user-defaults read.
     if (!IsAccountsFamilyQuery(query)) return NO;
     // Only guard an actual DATA write — an attribute-only update (no kSecValueData) destroys
     // nothing and must pass through.
@@ -675,6 +679,7 @@ static BOOL ApolloShouldBlockDestructiveAccountWrite(NSDictionary *query, NSData
     NSString *account = query[(__bridge id)kSecAttrAccount];
     if (ApolloWasAccountServed(account)) return NO; // reads worked this session — trust the write
     if (newValue.length >= kAccountBlobPopulatedThreshold) return NO; // not an empty/tiny write
+    if (ApolloDebugDisableRecovery()) return NO;
     long existing = ApolloExistingAccountBlobMaxLen(query[(__bridge id)kSecAttrService], account);
     return existing >= (long)kAccountBlobPopulatedThreshold; // a populated copy exists — protect it
 }
@@ -731,6 +736,19 @@ static NSString *ApolloSyncDispositionString(NSDictionary *query) {
 static long ApolloValueDataLength(NSDictionary *dict) {
     id value = dict[(__bridge id)kSecValueData];
     return [value isKindOfClass:[NSData class]] ? (long)[(NSData *)value length] : -1;
+}
+
+// Byte length of the value data a SecItemCopyMatching result already carries (-1 when the
+// caller asked for no data, or for a result shape that carries none).
+static long ApolloResultDataLength(CFTypeRef result) {
+    if (!result) return -1;
+    CFTypeID type = CFGetTypeID(result);
+    if (type == CFDataGetTypeID()) return (long)CFDataGetLength((CFDataRef)result);
+    if (type == CFDictionaryGetTypeID()) {
+        CFTypeRef data = CFDictionaryGetValue((CFDictionaryRef)result, kSecValueData);
+        if (data && CFGetTypeID(data) == CFDataGetTypeID()) return (long)CFDataGetLength((CFDataRef)data);
+    }
+    return -1;
 }
 
 // kSecAttrAccessible values are opaque short codes ("ak", "ck", …). Name the ones we know and
@@ -864,12 +882,9 @@ static NSString *const kApolloGroupSuite = @"group.com.christianselig.apollo";
 // reports the status and the item's protection class (kSecAttrAccessible) out-params. The
 // protection class matters for the warm-signout theory: a WhenUnlocked item cannot be read
 // while the device is locked in the background, which would present exactly as "signed out
-// after idling". Enumerates generic passwords and filters, so no exact Valet service string
+// after idling". Filters the caller's generic-password sweep, so no exact Valet service string
 // is needed. -34018 distinguishes an entitlement rejection from a genuine not-found.
-static long ApolloRealAccountsBlobLength(OSStatus *outStatus, NSString **outAccessible) {
-    OSStatus st = errSecSuccess;
-    NSArray *found = ApolloCopyAllGenericPasswords(&st);
-    if (outStatus) *outStatus = st;
+static long ApolloRealAccountsBlobLength(NSArray *found, OSStatus st, NSString **outAccessible) {
     if (!found) return (st == errSecItemNotFound) ? -1 : -2;
     long len = -1;
     for (NSDictionary *item in found) {
@@ -911,11 +926,9 @@ static NSString *ApolloProtectedDataString(void) {
 // Every physical copy of the account item across access groups, with each copy's group, byte
 // length, protection class, and synchronizable flag. This is the direct test of the root-cause
 // theory: if the account is split across drawers, this shows >1 copy in different groups (and/or
-// a copy whose group differs from what Valet's scoped query targets). One enumeration; only runs
-// at snapshot time (lifecycle transitions), so it's low-frequency.
-static NSString *ApolloAccountsBlobGroupBreakdown(void) {
-    OSStatus st = errSecSuccess;
-    NSArray *found = ApolloCopyAllGenericPasswords(&st);
+// a copy whose group differs from what Valet's scoped query targets). Reads the caller's sweep,
+// shared with the blob-length helper above.
+static NSString *ApolloAccountsBlobGroupBreakdown(NSArray *found, OSStatus st) {
     if (!found) return [NSString stringWithFormat:@"enum-status=%d", (int)st];
     NSMutableArray<NSString *> *copies = [NSMutableArray array];
     for (NSDictionary *item in found) {
@@ -939,7 +952,8 @@ static NSString *ApolloAccountsBlobGroupBreakdown(void) {
 // Exported for the dev-only debug screen: a human-readable report of where the account item
 // lives (each copy's access group / size / protection class), plus the current defaults state.
 NSString *ApolloDebugAccountKeychainReport(void) {
-    NSString *breakdown = ApolloAccountsBlobGroupBreakdown();
+    OSStatus enumStatus = errSecSuccess;
+    NSString *breakdown = ApolloAccountsBlobGroupBreakdown(ApolloCopyAllGenericPasswords(&enumStatus), enumStatus);
     ApolloLoginDiag(@"[DebugReport] %@", breakdown);
     return breakdown;
 }
@@ -1069,16 +1083,19 @@ static void ApolloLogAccountSnapshot(NSString *reason) {
     NSInteger acctCount = 0, acctWithUser = 0;
     ApolloPersistedAccountStats(&acctCount, &acctWithUser);
 
+    // One sweep feeds both lines below. Two independent enumerations made
+    // securityd decrypt every generic password twice per lifecycle transition.
     OSStatus kcStatus = errSecSuccess;
+    NSArray *keychainItems = ApolloCopyAllGenericPasswords(&kcStatus);
     NSString *accessible = nil;
-    long kcLen = ApolloRealAccountsBlobLength(&kcStatus, &accessible);
+    long kcLen = ApolloRealAccountsBlobLength(keychainItems, kcStatus, &accessible);
     long mirrorLen = ApolloMirrorAccountsBlobLength();
 
     ApolloLoginDiag(@"[AccountSnapshot] %@ | device=%@ | keychain: len=%ld status=%d accessible=%@ | defaults: len=%ld index=%ld accounts=%ld withUser=%ld | mirror: len=%ld | active=%@",
                     reason, ApolloProtectedDataString(), kcLen, (int)kcStatus, accessible ?: @"?",
                     defaultsLen, (long)index, (long)acctCount, (long)acctWithUser, mirrorLen, active ?: @"(nil)");
     // The access-group breakdown (root-cause confirmation) — separate line to keep both legible.
-    ApolloLoginDiag(@"[AccountBlobGroups] %@ | %@", reason, ApolloAccountsBlobGroupBreakdown());
+    ApolloLoginDiag(@"[AccountBlobGroups] %@ | %@", reason, ApolloAccountsBlobGroupBreakdown(keychainItems, kcStatus));
 }
 
 // Account snapshots reconstruct Apollo's archived RDKClient objects and inspect
@@ -1115,7 +1132,12 @@ static void ApolloScheduleAccountSnapshot(NSString *reason) {
         return;
     }
     BOOL firstActivation = didBecomeActive && !sApolloAccountSnapshotCompletedFirstActivation;
+    // A snapshot unarchives the whole account blob and sweeps the keychain, and
+    // the warm sign-out it was written to catch is fixed. One baseline per
+    // launch is enough to place a report in a session; the per-transition trail
+    // stays available to anyone actually re-investigating, behind the debug flag.
     if (didBecomeActive) sApolloAccountSnapshotCompletedFirstActivation = YES;
+    if (!firstActivation && ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFLEX]) return;
 
     // didBecomeActive is delivered while the process-launch watchdog can still
     // be sensitive on older devices. Give Apollo's first frame and native
@@ -1273,6 +1295,26 @@ static OSStatus SecItemAdd_replacement(CFDictionaryRef query, CFTypeRef *result)
     return status;
 }
 
+// Which read misses are worth a recovery enumeration (see "Scoped-read recovery via
+// enumeration" above). That enumeration makes securityd decrypt every generic password the
+// app can see, so it is scoped to the items it was written for: the account blobs whose loss
+// signs the user out. Any other Valet key that legitimately has no item — an absent web
+// session, a first-launch heartbeat seed, Valet's own canary — used to pay a full enumeration
+// on every miss, on every device, for nothing.
+//
+// The latch keeps the affected devices whole. Recovery serving an item is proof that this
+// keychain has the scoped-read-miss fault, and on such a keychain every Valet key is suspect,
+// so recovery re-opens for all single-item reads from then on. AccountManager loads the
+// account blob at launch, ahead of any other Valet reader, so an affected device flips the
+// latch before another key needs it.
+static atomic_bool sRecoverProvenNeeded = false;
+
+static BOOL ApolloShouldAttemptRecoverRead(NSDictionary *query) {
+    if (!ApolloIsSingleItemValetQuery(query)) return NO;
+    if (IsAccountsFamilyQuery(query)) return YES;
+    return atomic_load_explicit(&sRecoverProvenNeeded, memory_order_relaxed);
+}
+
 static OSStatus SecItemCopyMatching_replacement(CFDictionaryRef query, CFTypeRef *result) {
     NSDictionary *strippedQuery = stripGroupAccessAttr(query);
 
@@ -1324,9 +1366,6 @@ static OSStatus SecItemCopyMatching_replacement(CFDictionaryRef query, CFTypeRef
         status = errSecItemNotFound;
         ApolloLoginDiag(@"[FaultInjection] forcing account scoped read miss (SIMULATED — not a real keychain failure)");
     } else {
-        // For the trace, capture the returned byte length even when the caller passed result=NULL
-        // (an existence check) — do our own attributed read on the accounts item so the log always
-        // carries the size that distinguishes an empty blob from a populated one.
         status = ApolloRealSecItemCopyMatching(strippedQuery, result);
         if (status == errSecItemNotFound && IsValetQuery(strippedQuery)) {
             // Only fall back to the broadened (synced-included) read on a local miss, so a
@@ -1344,11 +1383,14 @@ static OSStatus SecItemCopyMatching_replacement(CFDictionaryRef query, CFTypeRef
     // enumerated value so Valet's read succeeds and AccountManager never issues the wiping
     // empty write. This is the read-side counterpart of the write-side self-heal.
     // (The dev-only "disable recovery" toggle skips this so the raw wipe can be observed.)
-    if (status == errSecItemNotFound && ApolloIsSingleItemValetQuery(strippedQuery) && !ApolloDebugDisableRecovery()) {
+    if (status == errSecItemNotFound && ApolloShouldAttemptRecoverRead(strippedQuery) && !ApolloDebugDisableRecovery()) {
         NSString *foundGroup = nil;
         NSDictionary *foundAttrs = nil;
         OSStatus recovered = ApolloValetRecoverRead(strippedQuery, result, &foundGroup, &foundAttrs);
         if (recovered == errSecSuccess) {
+            // This keychain misses scoped reads that an enumeration answers, so open recovery
+            // back up for every single-item Valet read on it (see ApolloShouldAttemptRecoverRead).
+            atomic_store_explicit(&sRecoverProvenNeeded, true, memory_order_relaxed);
             // The group Valet's original (pre-strip) query targeted vs the group the item
             // actually lives in — a mismatch is the direct proof of the access-group split.
             id queriedGroup = ((__bridge NSDictionary *)query)[(__bridge id)kSecAttrAccessGroup];
@@ -1383,21 +1425,16 @@ static OSStatus SecItemCopyMatching_replacement(CFDictionaryRef query, CFTypeRef
     }
 
     if (ApolloIsAccountsBlobQuery(strippedQuery)) {
-        long readLen = -1;
-        if (status == errSecSuccess) {
-            CFTypeRef probe = NULL;
-            NSMutableDictionary *probeQ = [strippedQuery mutableCopy];
-            [probeQ removeObjectForKey:(__bridge id)kSecReturnAttributes];
-            [probeQ removeObjectForKey:(__bridge id)kSecReturnRef];
-            probeQ[(__bridge id)kSecReturnData] = @YES;
-            probeQ[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
-            if (ApolloRealSecItemCopyMatching(probeQ, &probe) == errSecSuccess && probe) {
-                if (CFGetTypeID(probe) == CFDataGetTypeID()) readLen = (long)CFDataGetLength((CFDataRef)probe);
-                CFRelease(probe);
-            }
-        }
+        // The byte length that separates an empty blob from a populated one comes out of the
+        // result the caller was already handed. A caller that asked for no data — Valet's
+        // existence check passes result=NULL — logs readLen=n/a instead of paying a second
+        // securityd round trip whose only consumer was this line. That item's length still
+        // lands in [AccountSnapshot] at every lifecycle transition and in every ADD/UPDATE
+        // trace, which is where the wipe-vs-persistence-failure question is actually answered.
+        long readLen = (status == errSecSuccess && result) ? ApolloResultDataLength(*result) : -1;
         ApolloKeychainTrace(@"COPY", strippedQuery, status,
-                            [NSString stringWithFormat:@"route=real readLen=%ld", readLen]);
+                            [NSString stringWithFormat:@"route=real readLen=%@",
+                             readLen >= 0 ? (id)[NSString stringWithFormat:@"%ld", readLen] : (id)@"n/a"]);
     }
     return status;
 }
@@ -3598,6 +3635,54 @@ static BOOL ApolloDefaultsKeyChangesAccountCollection(NSString *key) {
     return [key isEqualToString:@"RedditAccounts2"];
 }
 
+// Apollo's group-suite unlock flags. One table so the launch verification and
+// the launch write cannot drift apart — a key present in only one of them would
+// either be written and never checked, or checked and never written.
+static NSString *const kApolloGroupUnlockFlags[] = {
+    // Ultra/Pro flags
+    @"UMigrationOccurred",
+    @"ProMigrationOccurred",
+    @"SPMigrationOccurred",
+    @"CommMigrationOccurred",
+    // Secret icon flags
+    @"HasUnlockedBeanVault",  // Beans (Black Friday 2022)
+    @"SlothkunUnlocked",      // Slothkun
+    @"iJustineUnlocked",      // iJustine (sekrit: wrappingpaper)
+    @"UnitedStatesUnlocked",  // America! (sekrit: america)
+    @"UnitedStates2Unlocked", // Super America (sekrit: superamerica)
+    @"UnitedKingdomUnlocked", // UK (sekrit: hughlaurie)
+    @"TLDTodayUnlocked",      // Yo. Jonathan Here. (sekrit: tld/jellyfish/crispy)
+    @"ApolloBookProUnlocked", // ApolloBook Pro (sekrit: apollobookpro)
+    @"UnlockedWallpapers",    // Wallpapers
+    @"ATPUnlocked",           // ATP (sekrit: atp)
+    @"PhilUnlocked",          // Phil Schiller (sekrit: phil/throatpunch)
+    @"CanadaUnlocked",        // Canada D'Eh (sekrit: canadadeh)
+    @"UkraineUnlocked",       // Ukraine (sekrit: ukraine)
+    @"ErnestUnlocked",        // Ernest (sekrit: ernest)
+    @"SusUnlocked",           // Sus/Among Us (sekrit: sus)
+    @"Dave2DUnlocked",        // Dave2D (sekrit: dave2d)
+    @"MKBHDUnlocked",         // MKBHD (sekrit: keith)
+    @"PeachyUnlocked",        // Peachy (sekrit: neonpeach)
+    @"LinusUnlocked",         // Linus Tech Tips (sekrit: livelaughliao)
+    @"AndruUnlocked",         // Andru Edwards (sekrit: andru/prowrestler)
+    @"EAPUnlocked",           // Icons Drop Test (sekrit: everythingapplepro)
+    @"ReneUnlocked",          // Rene Ritchie (sekrit: rene/montrealbagels)
+    @"SnazzyUnlocked",        // Snazzy Labs (sekrit: margaret)
+};
+static const size_t kApolloGroupUnlockFlagCount =
+    sizeof(kApolloGroupUnlockFlags) / sizeof(kApolloGroupUnlockFlags[0]);
+
+// The version stamp alone is not enough to skip the writes: anything that clears
+// one flag without clearing the stamp would leave that unlock off until the next
+// tweak version. Reads of an already-loaded preferences domain are cheap, so
+// verify every flag and let a cleared one heal itself on the next launch.
+static BOOL ApolloGroupUnlockFlagsAllSet(NSUserDefaults *suite) {
+    for (size_t i = 0; i < kApolloGroupUnlockFlagCount; i++) {
+        if (![suite boolForKey:kApolloGroupUnlockFlags[i]]) return NO;
+    }
+    return YES;
+}
+
 static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     return [key isEqualToString:UDKeyApolloFavoriteSubreddits];
 }
@@ -3704,6 +3789,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
 
     NSDictionary *defaultValues = @{UDKeyBlockAnnouncements: @YES,
                                     UDKeyEnableFLEX: @NO,
+                                    UDKeyVerboseLogging: @NO,
                                     UDKeyCrashCaptureEnabled: @YES,
                                     UDKeyTrendingSubredditsLimit: @"5",
                                     UDKeyShowRandNsfw: @NO,
@@ -3918,12 +4004,14 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
         sEnableAIAutoExpandSummaries = NO;
         [[NSUserDefaults standardUserDefaults] setBool:NO forKey:UDKeyEnableAIAutoExpandSummaries];
     }
+    // Carry a pre-#674 single-endpoint cloud configuration onto the per-provider
+    // keys before reading them, so an existing Cloud AI user keeps working.
+    ApolloAIMigrateLegacyCloudKeys();
     // AI summary backend: sanitize to a known provider (unrecognized/unset → apple,
     // the on-device default), mirroring the translation-provider handling below.
     {
         NSString *aiProvider = (NSString *)[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyAISummaryProvider];
-        if ([aiProvider isEqualToString:@"openrouter"] || [aiProvider isEqualToString:@"gemini"] ||
-            [aiProvider isEqualToString:@"custom"] || [aiProvider isEqualToString:@"apple"]) {
+        if (ApolloAIProviderIsKnown(aiProvider)) {
             sAISummaryProvider = [aiProvider copy];
         } else {
             sAISummaryProvider = @"apple";
@@ -3934,6 +4022,8 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
             v = [v stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             return v.length > 0 ? [v copy] : nil;
         };
+        sOpenAIAPIKey = loadKey(UDKeyOpenAIAPIKey);
+        sOpenAIAIModel = loadKey(UDKeyOpenAIAIModel);
         sOpenRouterAPIKey = loadKey(UDKeyOpenRouterAPIKey);
         sOpenRouterAIModel = loadKey(UDKeyOpenRouterAIModel);
         sGeminiAPIKey = loadKey(UDKeyGeminiAPIKey);
@@ -4336,60 +4426,63 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
 
     ApolloMarkdownGifInstall();
 
-    // Ultra pre-migration
-    [[NSUserDefaults standardUserDefaults] setObject:@"ya" forKey:@"awesome_notifications"];
-
-    NSUserDefaults *sharedSuite = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.christianselig.apollo"];
-    if (sharedSuite) {
-        // Ultra/Pro flags
-        [sharedSuite setBool:YES forKey:@"UMigrationOccurred"];
-        [sharedSuite setBool:YES forKey:@"ProMigrationOccurred"];
-        [sharedSuite setBool:YES forKey:@"SPMigrationOccurred"];
-        [sharedSuite setBool:YES forKey:@"CommMigrationOccurred"];
-
-        // Secret icon flags
-        [sharedSuite setBool:YES forKey:@"HasUnlockedBeanVault"];  // Beans (Black Friday 2022)
-        [sharedSuite setBool:YES forKey:@"SlothkunUnlocked"];      // Slothkun
-        [sharedSuite setBool:YES forKey:@"iJustineUnlocked"];      // iJustine (sekrit: wrappingpaper)
-        [sharedSuite setBool:YES forKey:@"UnitedStatesUnlocked"];  // America! (sekrit: america)
-        [sharedSuite setBool:YES forKey:@"UnitedStates2Unlocked"]; // Super America (sekrit: superamerica)
-        [sharedSuite setBool:YES forKey:@"UnitedKingdomUnlocked"]; // UK (sekrit: hughlaurie)
-        [sharedSuite setBool:YES forKey:@"TLDTodayUnlocked"];      // Yo. Jonathan Here. (sekrit: tld/jellyfish/crispy)
-        [sharedSuite setBool:YES forKey:@"ApolloBookProUnlocked"]; // ApolloBook Pro (sekrit: apollobookpro)
-        [sharedSuite setBool:YES forKey:@"UnlockedWallpapers"];    // Wallpapers
-        [sharedSuite setBool:YES forKey:@"ATPUnlocked"];           // ATP (sekrit: atp)
-        [sharedSuite setBool:YES forKey:@"PhilUnlocked"];          // Phil Schiller (sekrit: phil/throatpunch)
-        [sharedSuite setBool:YES forKey:@"CanadaUnlocked"];        // Canada D'Eh (sekrit: canadadeh)
-        [sharedSuite setBool:YES forKey:@"UkraineUnlocked"];       // Ukraine (sekrit: ukraine)
-        [sharedSuite setBool:YES forKey:@"ErnestUnlocked"];        // Ernest (sekrit: ernest)
-        [sharedSuite setBool:YES forKey:@"SusUnlocked"];           // Sus/Among Us (sekrit: sus)
-        [sharedSuite setBool:YES forKey:@"Dave2DUnlocked"];        // Dave2D (sekrit: dave2d)
-        [sharedSuite setBool:YES forKey:@"MKBHDUnlocked"];         // MKBHD (sekrit: keith)
-        [sharedSuite setBool:YES forKey:@"PeachyUnlocked"];        // Peachy (sekrit: neonpeach)
-        [sharedSuite setBool:YES forKey:@"LinusUnlocked"];         // Linus Tech Tips (sekrit: livelaughliao)
-        [sharedSuite setBool:YES forKey:@"AndruUnlocked"];         // Andru Edwards (sekrit: andru/prowrestler)
-        [sharedSuite setBool:YES forKey:@"EAPUnlocked"];           // Icons Drop Test (sekrit: everythingapplepro)
-        [sharedSuite setBool:YES forKey:@"ReneUnlocked"];          // Rene Ritchie (sekrit: rene/montrealbagels)
-        [sharedSuite setBool:YES forKey:@"SnazzyUnlocked"];        // Snazzy Labs (sekrit: margaret)
+    // Apollo's sideload-unlock flags only ever go absent -> YES, so re-writing
+    // every one of them on each launch just dirties two cfprefsd domains and
+    // makes it rewrite both plists. A stamp per domain re-runs the writes
+    // whenever the tweak version changes and whenever that domain is reset,
+    // which is the only way the flags can go missing again.
+    NSString *sideloadStamp = @TWEAK_VERSION;
+    NSUserDefaults *appDefaults = [NSUserDefaults standardUserDefaults];
+    if (![[appDefaults stringForKey:UDKeySideloadFlagsStamp] isEqualToString:sideloadStamp] ||
+        ![@"ya" isEqual:[appDefaults objectForKey:@"awesome_notifications"]] ||
+        ![appDefaults boolForKey:@"airprint-active"]) {
+        // Ultra pre-migration
+        [appDefaults setObject:@"ya" forKey:@"awesome_notifications"];
+        // Unlock Chumbus theme (normally requires 1000 boop button taps in Theme Settings)
+        [appDefaults setBool:YES forKey:@"airprint-active"];
+        [appDefaults setObject:sideloadStamp forKey:UDKeySideloadFlagsStamp];
     }
 
-    // Unlock Chumbus theme (normally requires 1000 boop button taps in Theme Settings)
-    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"airprint-active"];
+    NSUserDefaults *sharedSuite = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.christianselig.apollo"];
+    if (sharedSuite && (![[sharedSuite stringForKey:UDKeyGroupUnlockFlagsStamp] isEqualToString:sideloadStamp] ||
+                        !ApolloGroupUnlockFlagsAllSet(sharedSuite))) {
+        for (size_t i = 0; i < kApolloGroupUnlockFlagCount; i++) {
+            [sharedSuite setBool:YES forKey:kApolloGroupUnlockFlags[i]];
+        }
+        [sharedSuite setObject:sideloadStamp forKey:UDKeyGroupUnlockFlagsStamp];
+    }
 
-    // Suppress wallpaper prompt
-    NSDate *dateIn90d = [NSDate dateWithTimeIntervalSinceNow:60*60*24*90];
-    [[NSUserDefaults standardUserDefaults] setObject:dateIn90d forKey:@"WallpaperPromptMostRecent2"];
+    // Suppress wallpaper prompt. Apollo only compares this date against now, so
+    // one far-future value keeps the prompt away for months; writing a fresh
+    // NSDate every launch made the main preferences plist dirty every launch
+    // even when nothing else had changed.
+    id wallpaperPromptDate = [appDefaults objectForKey:@"WallpaperPromptMostRecent2"];
+    if (![wallpaperPromptDate isKindOfClass:[NSDate class]] ||
+        [(NSDate *)wallpaperPromptDate timeIntervalSinceNow] < 60*60*24*30) {
+        [appDefaults setObject:[NSDate dateWithTimeIntervalSinceNow:60*60*24*90]
+                        forKey:@"WallpaperPromptMostRecent2"];
+    }
 
     // Sideload fixes. SecItemDelete is hooked on device too now (not just the simulator): the
     // keychain self-heal and container mirror need it to sweep synced shadow items on sign-out,
     // so a subsequent sign-in isn't re-broken by a stale synced copy.
-    rebind_symbols((struct rebinding[5]) {
+    //
+    // Every module's fishhook bindings go through this ONE call: rebind_symbols
+    // walks all ~2k loaded images per call, and four separate calls paid that
+    // walk four times. The Security bindings have to be installed here, before
+    // the Web JSON keychain hydration below, so this is the call the others join.
+    struct rebinding rebindings[5 + 3 * ApolloRebornMaxAppendedRebindings] = {
         {"SecItemAdd", (void *)SecItemAdd_replacement, (void **)&SecItemAdd_orig},
         {"SecItemCopyMatching", (void *)SecItemCopyMatching_replacement, (void **)&SecItemCopyMatching_orig},
         {"SecItemUpdate", (void *)SecItemUpdate_replacement, (void **)&SecItemUpdate_orig},
         {"SecItemDelete", (void *)SecItemDelete_replacement, (void **)&SecItemDelete_orig},
-        {"uname", (void *)uname_replacement, (void **)&uname_orig}
-    }, 5);
+        {"uname", (void *)uname_replacement, (void **)&uname_orig},
+    };
+    size_t rebindingCount = 5;
+    rebindingCount += ApolloImageUploadHostAppendRebindings(&rebindings[rebindingCount]);
+    rebindingCount += ApolloPhotoComposerAppendRebindings(&rebindings[rebindingCount]);
+    rebindingCount += ApolloRecentlyReadAppendRebindings(&rebindings[rebindingCount]);
+    rebind_symbols(rebindings, rebindingCount);
 
     if ([[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFLEX]) {
         if (!%c(FLEXManager)) {
@@ -4406,6 +4499,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     // the simulator's virtualized keychain is in place (see the deferral note
     // where sWebJSONEnabled is read). Migrates any legacy NSUserDefaults cookie,
     // then any legacy single-global session, into the per-account store.
+    ApolloWebJSONBeginLaunchAccountSnapshot();
     ApolloWebJSONLoadPersistedCredentials();
     // Per-account coherence: a stored web session IS that account's sign-in —
     // it only works while the Web JSON transport is enabled. The mode is
@@ -4453,6 +4547,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
             @catch (NSException *e) { ApolloLog(@"[WebJSON][identity] launch synthesis failed for u/%@: %@", username, e); }
         }
     }
+    ApolloWebJSONEndLaunchAccountSnapshot();
     // This launch loads accounts fresh, so any "restart to activate" state left
     // over from a mid-session web login is now resolved — clear the indicator.
     [[NSUserDefaults standardUserDefaults] removeObjectForKey:UDKeyWebJSONPendingRestart];

@@ -6,7 +6,6 @@
 
 + (void)requestPreviewForURL:(NSURL *)url completion:(void (^)(ApolloLinkPreview *preview))completion;
 + (BOOL)isTwitterURL:(NSURL *)url;
-
 // Non-nil when a CACHED preview is the residue of a fetch that never reached
 // the real page — a bot-wall interstitial title, a DOI page whose metadata is
 // just the DOI, or the slug-title + favicon fallback with no description — and

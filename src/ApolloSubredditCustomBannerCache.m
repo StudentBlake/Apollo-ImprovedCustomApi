@@ -1,6 +1,7 @@
 #import "ApolloSubredditCustomBannerCache.h"
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 
 NSString *const ApolloSubredditCustomBannerChangedNotification = @"ApolloSubredditCustomBannerChangedNotification";
 NSString *const ApolloSubredditCustomBannerSubredditNameKey = @"subredditName";
@@ -38,9 +39,12 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
     self = [super init];
     if (self) {
         _ioQueue = dispatch_queue_create("com.apollofix.subredditCustomBannerCache.io", DISPATCH_QUEUE_SERIAL);
+        // One custom header is on screen at a time and each is stored on
+        // disk, so the memory copy only has to cover recent scrollback.
         _imageCache = [[NSCache alloc] init];
-        _imageCache.countLimit = 200;
-        _imageCache.totalCostLimit = 30 * 1024 * 1024;
+        _imageCache.countLimit = 80;
+        _imageCache.totalCostLimit = 10 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"subreddit-banners", _imageCache);
         _storedKeysLock = [NSObject new];
         _storedKeys = [NSSet set];
 
@@ -98,8 +102,7 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
 
 - (void)cacheImage:(UIImage *)image forKey:(NSString *)key {
     if (!image || key.length == 0) return;
-    NSUInteger cost = (NSUInteger)(image.size.width * image.size.height * image.scale * image.scale * 4);
-    [self.imageCache setObject:image forKey:key cost:cost];
+    [self.imageCache setObject:image forKey:key cost:ApolloImageByteCost(image)];
 }
 
 - (void)publishStoredKey:(NSString *)key present:(BOOL)present {
@@ -189,6 +192,11 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
 
     if ([self.storedKeys containsObject:key]) dispatch_async(self.ioQueue, ^{
         if ([self.imageCache objectForKey:key]) return;
+        // A removeBannerForSubreddit: that lands after this block was enqueued
+        // has already cleared the memory cache and unpublished the key, but its
+        // unlink is queued BEHIND us — so the file is still readable here and
+        // re-caching it would resurrect a deleted banner in memory.
+        if (![self.storedKeys containsObject:key]) return;
         NSString *path = [self filePathForSubreddit:key];
         NSData *data = [NSData dataWithContentsOfFile:path];
         if (!data.length) {
@@ -204,6 +212,12 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
             [self postChangedNotificationForSubreddit:key];
             return;
         }
+        // Re-checked at the commit point, not just on entry: the decode above is
+        // the long part of this block and a removal can land inside it. This
+        // does not make check-and-commit atomic — removal clears the memory
+        // cache on the caller's thread by design, so it stays synchronous for
+        // the common path — but it narrows the window to the store call itself.
+        if (![self.storedKeys containsObject:key]) return;
         [self cacheImage:diskImage forKey:key];
         [self postChangedNotificationForSubreddit:key];
     });
@@ -219,7 +233,15 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
     NSString *key = [self normalizedSubredditName:subredditName];
     if (key.length == 0 || ![self.storedKeys containsObject:key]) return nil;
     NSString *path = [self filePathForSubreddit:subredditName];
-    return path.length > 0 ? [NSURL fileURLWithPath:path isDirectory:NO] : nil;
+    if (path.length == 0) return nil;
+    // storedKeys is an in-memory mirror, and this lives under NSCachesDirectory,
+    // which the OS may purge behind our back. Callers use this URL to load the
+    // file directly and fall back to the subreddit's real banner on nil, so a
+    // URL to a purged file breaks that fallback instead of triggering it. This
+    // is the cold fullscreen-view path, not the hot render path (that reads
+    // hasCustomBannerForSubreddit:), so the stat costs nothing worth saving.
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return nil;
+    return [NSURL fileURLWithPath:path isDirectory:NO];
 }
 
 - (BOOL)saveBanner:(UIImage *)image forSubreddit:(NSString *)subredditName error:(NSError **)error {

@@ -1,6 +1,7 @@
 #import "ApolloSubredditCustomIconCache.h"
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 
 NSString *const ApolloSubredditCustomIconChangedNotification = @"ApolloSubredditCustomIconChangedNotification";
 NSString *const ApolloSubredditCustomIconSubredditNameKey = @"subredditName";
@@ -37,9 +38,12 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
     self = [super init];
     if (self) {
         _ioQueue = dispatch_queue_create("com.apollofix.subredditCustomIconCache.io", DISPATCH_QUEUE_SERIAL);
+        // List icons render at ~40pt and every icon is stored on disk, so a
+        // few hundred KB of decoded icons covers a whole subreddit list.
         _imageCache = [[NSCache alloc] init];
-        _imageCache.countLimit = 200;
-        _imageCache.totalCostLimit = 20 * 1024 * 1024;
+        _imageCache.countLimit = 120;
+        _imageCache.totalCostLimit = 8 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"subreddit-icons", _imageCache);
         _storedKeysLock = [NSObject new];
         _storedKeys = [NSSet set];
 
@@ -97,8 +101,7 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
 
 - (void)cacheImage:(UIImage *)image forKey:(NSString *)key {
     if (!image || key.length == 0) return;
-    NSUInteger cost = (NSUInteger)(image.size.width * image.size.height * image.scale * image.scale * 4);
-    [self.imageCache setObject:image forKey:key cost:cost];
+    [self.imageCache setObject:image forKey:key cost:ApolloImageByteCost(image)];
 }
 
 - (void)publishStoredKey:(NSString *)key present:(BOOL)present {
@@ -181,6 +184,10 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
     // scrolling/layout hook wait on the filesystem or image decode.
     if ([self.storedKeys containsObject:key]) dispatch_async(self.ioQueue, ^{
         if ([self.imageCache objectForKey:key]) return;
+        // Same resurrection race as the banner cache: a removal that lands after
+        // this block was enqueued clears memory and unpublishes the key, but its
+        // unlink is queued behind us, so the file still reads.
+        if (![self.storedKeys containsObject:key]) return;
         NSString *path = [self filePathForSubreddit:key];
         NSData *data = [NSData dataWithContentsOfFile:path];
         if (!data.length) {
@@ -196,6 +203,10 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
             [self postChangedNotificationForSubreddit:key];
             return;
         }
+        // Re-checked at the commit point for the same reason as the banner cache:
+        // the decode is the long part of this block and a removal can land
+        // inside it.
+        if (![self.storedKeys containsObject:key]) return;
         [self cacheImage:diskImage forKey:key];
         [self postChangedNotificationForSubreddit:key];
     });
@@ -211,7 +222,12 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
     NSString *key = [self normalizedSubredditName:subredditName];
     if (key.length == 0 || ![self.storedKeys containsObject:key]) return nil;
     NSString *path = [self filePathForSubreddit:subredditName];
-    return path.length > 0 ? [NSURL fileURLWithPath:path isDirectory:NO] : nil;
+    if (path.length == 0) return nil;
+    // Same purge hazard as the banner cache: storedKeys is an in-memory mirror
+    // of an NSCachesDirectory the OS may reclaim, and a URL to a purged file
+    // defeats the caller's nil-means-use-the-real-icon fallback. Cold path.
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) return nil;
+    return [NSURL fileURLWithPath:path isDirectory:NO];
 }
 
 - (BOOL)saveIcon:(UIImage *)image forSubreddit:(NSString *)subredditName error:(NSError **)error {

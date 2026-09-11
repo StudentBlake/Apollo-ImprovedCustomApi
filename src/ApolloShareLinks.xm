@@ -648,7 +648,24 @@ static void ApolloPumpShareURLResolveTasks(void) {
         }
     }
     for (ShareUrlTask *task in tasksToStart) {
-        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:task.originalURL]
+        // ShareLinkRegexPattern accepts "http:", "https:" and a protocol-relative
+        // "//reddit.com/..." form. Resolve every one of them over HTTPS: the host
+        // is regex-pinned to public reddit.com, and Apollo ships
+        // NSAllowsArbitraryLoads, so a plaintext leg would really go out in the
+        // clear and expose which share link is being resolved. Upgrading rather
+        // than rejecting also keeps the scheme-less form working, and costs
+        // nothing — reddit.com is HTTPS-only and would redirect anyway.
+        NSURLComponents *shareComponents =
+            [NSURLComponents componentsWithString:task.originalURL ?: @""];
+        shareComponents.scheme = @"https";
+        NSURL *shareURL = shareComponents.URL;
+        if (!shareURL || shareURL.host.length == 0) {
+            ApolloLog(@"[ShareLinks] skipping unresolvable share URL (host=%@)",
+                      shareURL.host ?: @"(none)");
+            CompleteShareURLResolveTask(task, task.cacheKey, task.originalURL, NO);
+            continue;
+        }
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:shareURL
                                                                cachePolicy:NSURLRequestUseProtocolCachePolicy
                                                            timeoutInterval:10.0];
         NSURLSessionDataTask *getTask = [shareURLResolverSession dataTaskWithRequest:request];

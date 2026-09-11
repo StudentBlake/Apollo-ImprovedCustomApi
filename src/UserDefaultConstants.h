@@ -17,6 +17,20 @@ static NSString *const UDKeyUseCustomOAuthSignIn = @"UseCustomOAuthSignIn";
 static NSString *const UDKeyUserAgent = @"UserAgent";
 static NSString *const UDKeyBlockAnnouncements = @"DisableApollonouncements";
 static NSString *const UDKeyEnableFLEX = @"EnableFlexDebugging";
+// Verbose diagnostic logging into the "apollofix" os_log subsystem. Default NO.
+// With it off the ApolloLog macro returns before it formats anything, so a
+// normal session neither builds the string nor asks logd to persist the line.
+// The launch banner and the login-persistence diagnostics still emit (they use
+// ApolloLogAlways), and the cross-launch diag files are untouched — turning this
+// on is only needed to capture a full Export Debug Logs for a bug report.
+static NSString *const UDKeyVerboseLogging = @"VerboseLogging";
+// Version stamps for Apollo's own sideload-unlock flags, which the constructor
+// writes into two preference domains. Each stamp lives in the SAME domain as
+// the flags it guards, so anything that resets a domain (fresh install, a
+// settings restore, Apollo wiping the group container) takes the stamp with it
+// and the flags are rewritten on the next launch.
+static NSString *const UDKeySideloadFlagsStamp = @"ApolloRebornSideloadFlagsStamp";
+static NSString *const UDKeyGroupUnlockFlagsStamp = @"ApolloRebornGroupUnlockFlagsStamp";
 // Local crash recording (src/crash/). Default ON: reports only ever live on
 // device and are shared exclusively through the user-driven review flow.
 // KSCrash handlers install once per process, so flipping this takes effect on
@@ -429,10 +443,12 @@ static NSString *const UDKeyEnableTapToSummarize = @"EnableTapToSummarize";
 static NSString *const UDKeyEnableAIAutoExpandSummaries = @"EnableAIAutoExpandSummaries";
 // AI summary backend. "apple" (on-device FoundationModels, the default) or a
 // cloud provider reached through an OpenAI-compatible chat-completions API:
-// "openrouter" | "gemini" | "custom". Cloud providers need a user-supplied API
-// key; "custom" additionally needs a base URL. Keys/models are stored
-// per-provider so switching back and forth never loses them.
-static NSString *const UDKeyAISummaryProvider = @"AISummaryProvider"; // apple | openrouter | gemini | custom
+// "openai" | "openrouter" | "gemini" | "custom". Cloud providers need a
+// user-supplied API key; "custom" additionally needs a base URL. Keys/models
+// are stored per-provider so switching back and forth never loses them.
+static NSString *const UDKeyAISummaryProvider = @"AISummaryProvider"; // apple | openai | openrouter | gemini | custom
+static NSString *const UDKeyOpenAIAPIKey      = @"OpenAIAPIKey";
+static NSString *const UDKeyOpenAIAIModel     = @"OpenAIAIModel";
 static NSString *const UDKeyOpenRouterAPIKey  = @"OpenRouterAPIKey";
 static NSString *const UDKeyOpenRouterAIModel = @"OpenRouterAIModel";
 static NSString *const UDKeyGeminiAPIKey      = @"GeminiAPIKey";
@@ -440,6 +456,20 @@ static NSString *const UDKeyGeminiAIModel     = @"GeminiAIModel";
 static NSString *const UDKeyCustomAIAPIKey    = @"CustomAIAPIKey";
 static NSString *const UDKeyCustomAIModel     = @"CustomAIModel";
 static NSString *const UDKeyCustomAIBaseURL   = @"CustomAIBaseURL"; // OpenAI-compatible base URL, e.g. https://api.example.com/v1
+
+// Legacy single-endpoint cloud keys shipped by this fork in v3.4.0-v3.8.3,
+// before upstream's per-provider scheme above landed. Read ONCE by
+// ApolloAIMigrateLegacyCloudKeys() (Tweak.xm) to carry an existing
+// configuration onto the new keys, then never again — without that, everyone
+// who configured Cloud AI would silently fall back to on-device on update,
+// with their key/URL/model stranded under names nothing reads.
+// Do NOT reuse these names for anything else.
+static NSString *const UDKeyLegacyAICloudAPIKey = @"AICloudAPIKey";
+static NSString *const UDKeyLegacyAICloudBaseURL = @"AICloudBaseURL";
+static NSString *const UDKeyLegacyAICloudModel = @"AICloudModel";
+// Set once the migration has run (or been determined unnecessary), so a user
+// who later clears their key doesn't get the legacy values resurrected.
+static NSString *const UDKeyAICloudLegacyMigrationDone = @"AICloudLegacyMigrationDone";
 
 // Picture-in-Picture: floating in-app mini-player for comments-page videos.
 static NSString *const UDKeyPictureInPictureEnabled = @"PictureInPictureEnabled";       // master switch
